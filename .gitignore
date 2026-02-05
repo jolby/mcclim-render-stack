@@ -1,0 +1,16 @@
+# ASDF/Quicklisp
+*.fasl
+*.fas
+*.lib
+*.o
+*.dx64fsl
+*.lx64fsl
+*.x86f
+
+# Editor
+*~
+\#*\#
+.#*
+
+# OS
+.DS_Store

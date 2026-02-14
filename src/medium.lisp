@@ -176,8 +176,34 @@
   (declare (ignore coord-seq)))
 
 (defmethod medium-draw-polygon* ((medium render-stack-medium) coord-seq closed filled)
-  ;; Draw a polygon
-  (declare (ignore coord-seq closed filled)))
+  "Draw a polygon given by coordinate sequence.
+
+   coord-seq is a sequence of (x y) points: #(x0 y0 x1 y1 x2 y2 ...)
+   closed: if T, close the path (connect last point to first)
+   filled: if T, fill the polygon; otherwise stroke the outline"
+  (let* ((paint (%get-medium-paint medium))
+         (ink (medium-ink medium))
+         (builder (%get-medium-builder medium))
+         (coords (coerce coord-seq 'vector)))
+    (when (and builder (>= (length coords) 4))  ; Need at least 2 points (4 coordinates)
+      (with-ink-on-paint (paint ink medium)
+        (if filled
+            (frs:paint-set-draw-style paint :fill)
+            (configure-paint-for-stroke paint (medium-line-style medium) medium))
+        (frs:with-path-builder (pb)
+          ;; Move to first point
+          (frs:path-move-to pb (float (aref coords 0) 1.0f0) (float (aref coords 1) 1.0f0))
+          ;; Line to remaining points
+          (loop for i from 2 below (length coords) by 2
+                do (frs:path-line-to pb (float (aref coords i) 1.0f0) (float (aref coords (1+ i)) 1.0f0)))
+          ;; Close path if requested
+          (when closed
+            (frs:path-close pb))
+          ;; Build and draw the path
+          (let ((path (frs:build-path pb)))
+            (unwind-protect
+                 (frs:draw-path builder path paint)
+              (frs:release-path path))))))))
 
 (defmethod medium-draw-rectangle* ((medium render-stack-medium) x1 y1 x2 y2 filled)
   "Draw a rectangle from (x1, y1) to (x2, y2).

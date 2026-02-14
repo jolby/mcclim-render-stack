@@ -9,6 +9,20 @@
             :documentation "The Impeller rendering surface."))
   (:documentation "McCLIM medium using Impeller for drawing."))
 
+;;; Helper functions for medium drawing
+
+(defun %get-medium-paint (medium)
+  "Get or create the persistent paint object for this medium."
+  (or (medium-paint medium)
+      (setf (medium-paint medium) (frs:make-paint))))
+
+(defun %get-medium-builder (medium)
+  "Get the current display list builder from the port's delegate.
+   Returns nil if not currently in a frame (shouldn't happen in normal use)."
+  (let* ((port (port medium))
+         (delegate (when port (port-delegate port))))
+    (get-delegate-current-builder delegate)))
+
 ;;; Ink Conversion Utilities
 ;;; Converts CLIM inks (colors, +foreground-ink+, +background-ink+, etc.)
 ;;; to Impeller RGBA color values (floats 0.0-1.0).
@@ -154,8 +168,29 @@
   (declare (ignore coord-seq closed filled)))
 
 (defmethod medium-draw-rectangle* ((medium render-stack-medium) x1 y1 x2 y2 filled)
-  ;; Draw a rectangle
-  (declare (ignore x1 y1 x2 y2 filled)))
+  "Draw a rectangle from (x1, y1) to (x2, y2).
+
+   If filled is T, fills the rectangle with the medium's current ink.
+   If filled is NIL, strokes the rectangle outline using the medium's line style."
+  (let* ((paint (%get-medium-paint medium))
+         (ink (medium-ink medium))
+         (builder (%get-medium-builder medium)))
+    (when builder
+      (with-ink-on-paint (paint ink medium)
+        (if filled
+            (frs:paint-set-draw-style paint :fill)
+            (configure-paint-for-stroke paint (medium-line-style medium) medium))
+        ;; Normalize rectangle coordinates (ensure positive width/height)
+        (let ((nx (min x1 x2))
+              (ny (min y1 y2))
+              (nw (abs (- x2 x1)))
+              (nh (abs (- y2 y1))))
+          (frs:draw-rect builder
+                         (float nx 1.0f0)
+                         (float ny 1.0f0)
+                         (float nw 1.0f0)
+                         (float nh 1.0f0)
+                         paint))))))
 
 (defmethod medium-draw-ellipse* ((medium render-stack-medium)
                                   center-x center-y

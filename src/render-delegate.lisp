@@ -11,6 +11,8 @@
    (window :initarg :window :reader delegate-window)
    (impeller-context :accessor delegate-impeller-context)
    (impeller-surface :accessor delegate-impeller-surface)
+   (current-builder :accessor delegate-current-builder :initform nil
+                    :documentation "Current display list builder for medium drawing.")
    (frame-count :accessor delegate-frame-count :initform 0))
   (:documentation "Render delegate that draws McCLIM content via Impeller."))
 
@@ -60,6 +62,9 @@
     (when surface
       ;; Clear with background color
       (frs:with-display-list-builder (builder)
+        ;; Store builder for medium drawing operations
+        (setf (delegate-current-builder delegate) builder)
+        
         (let ((bg (frs:make-paint)))
           (frs:paint-set-color bg 1.0 1.0 1.0 1.0)  ; White background
           (frs:draw-rect builder 0.0 0.0 
@@ -72,10 +77,18 @@
         ;; For now, just draw a test pattern
         (draw-test-pattern builder delegate)
         
+        ;; Clear the builder reference before executing
+        (setf (delegate-current-builder delegate) nil)
+        
         (frs:execute-display-list surface builder))
       
       ;; Swap buffers
       (%sdl3:gl-swap-window (rs-sdl3::sdl3-window-handle (delegate-window delegate))))))
+
+(defun get-delegate-current-builder (delegate)
+  "Get the current display list builder for drawing, or nil if not in a frame."
+  (when delegate
+    (delegate-current-builder delegate)))
 
 (defun draw-test-pattern (builder delegate)
   "Draw a simple test pattern to verify rendering works."

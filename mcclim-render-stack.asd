@@ -23,6 +23,7 @@
   :depends-on (:mcclim-render-stack
                :fiveam)
   :components ((:module "test"
-                :components ((:file "package")
-                             (:file "backend-tests" :depends-on ("package")))))
+                 :components ((:file "package")
+                              (:file "backend-tests" :depends-on ("package"))
+                              (:file "ink-conversion-tests" :depends-on ("package" "backend-tests")))))
   :perform (test-op (op c) (symbol-call :fiveam :run! :mcclim-render-stack)))

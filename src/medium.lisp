@@ -261,8 +261,27 @@
   )
 
 (defmethod medium-clear-area ((medium render-stack-medium) left top right bottom)
-  ;; Clear a rectangular area
-  (declare (ignore left top right bottom)))
+  "Clear a rectangular area using the medium's background color."
+  (let* ((paint (%get-medium-paint medium))
+         (ink (medium-background medium))
+         (builder (%get-medium-builder medium)))
+    (when builder
+      ;; Don't use with-ink-on-paint here since we know it's just a solid color
+      (multiple-value-bind (r g b a)
+          (clim-ink-to-impeller-color ink medium)
+        (frs:paint-set-color paint r g b a)
+        (frs:paint-set-draw-style paint :fill)
+        ;; Normalize rectangle coordinates
+        (let ((nx (min left right))
+              (ny (min top bottom))
+              (nw (abs (- right left)))
+              (nh (abs (- bottom top))))
+          (frs:draw-rect builder
+                         (float nx 1.0f0)
+                         (float ny 1.0f0)
+                         (float nw 1.0f0)
+                         (float nh 1.0f0)
+                         paint))))))
 
 (defmethod medium-beep ((medium render-stack-medium))
   ;; Produce an audible beep

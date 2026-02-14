@@ -19,7 +19,13 @@
    (event-thread :accessor port-event-thread :initform nil)
    (quit-requested :accessor port-quit-requested :initform nil)
    (typography-context :accessor port-typography-context :initform nil
-                       :documentation "Impeller typography context for text rendering."))
+                       :documentation "Impeller typography context for text rendering.")
+   (event-queue :accessor port-event-queue :initform nil
+                :documentation "Thread-safe queue for CLIM events.")
+   (event-queue-lock :accessor port-event-queue-lock :initform nil
+                     :documentation "Lock for synchronizing access to event queue.")
+   (event-queue-condition :accessor port-event-queue-condition :initform nil
+                          :documentation "Condition variable for blocking on empty queue."))
   (:documentation "McCLIM port using render-stack (SDL3 + Impeller)."))
 
 ;;; ============================================================================
@@ -71,8 +77,60 @@
     ;; Create typography context for text rendering
     (setf (port-typography-context port) (frs:make-typography-context))
 
+    ;; Initialize event queue
+    (setf (port-event-queue port) (make-array 0 :adjustable t :fill-pointer 0))
+    (setf (port-event-queue-lock port) (bt2:make-lock "event-queue-lock"))
+    (setf (port-event-queue-condition port) (bt2:make-condition-variable))
+
     ;; Start event processing thread
     (start-event-thread port)))
+
+;;; ============================================================================
+;;; Event Queue Operations
+;;; ============================================================================
+
+(defun port-enqueue-event (port event)
+  "Enqueue a CLIM event to the port's event queue.
+   Thread-safe: can be called from any thread."
+  (bt2:with-lock-held ((port-event-queue-lock port))
+    (vector-push-extend event (port-event-queue port))
+    (bt2:condition-notify (port-event-queue-condition port))))
+
+(defun port-dequeue-event (port &optional timeout)
+  "Dequeue a CLIM event from the port's event queue.
+   If the queue is empty, blocks until an event arrives or timeout expires.
+   Returns the event, or NIL if timeout expired."
+  (bt2:with-lock-held ((port-event-queue-lock port))
+    (loop
+      ;; Check if there's an event
+      (when (> (fill-pointer (port-event-queue port)) 0)
+        ;; Remove and return first event
+        (let ((event (aref (port-event-queue port) 0)))
+          ;; Shift remaining events down
+          (replace (port-event-queue port) (port-event-queue port)
+                   :start1 0 :start2 1)
+          (decf (fill-pointer (port-event-queue port)))
+          (return event)))
+      ;; No event - wait for one
+      (if timeout
+          (unless (bt2:condition-wait (port-event-queue-condition port)
+                                      (port-event-queue-lock port)
+                                      :timeout timeout)
+            (return nil))  ; Timeout expired
+          (bt2:condition-wait (port-event-queue-condition port)
+                              (port-event-queue-lock port))))))
+
+(defun port-peek-event (port)
+  "Return the next event without removing it, or NIL if queue is empty.
+   Thread-safe: can be called from any thread."
+  (bt2:with-lock-held ((port-event-queue-lock port))
+    (when (> (fill-pointer (port-event-queue port)) 0)
+      (aref (port-event-queue port) 0))))
+
+(defun port-event-queue-empty-p (port)
+  "Return T if the event queue is empty."
+  (bt2:with-lock-held ((port-event-queue-lock port))
+    (= (fill-pointer (port-event-queue port)) 0)))
 
 ;;; ============================================================================
 ;;; Event Processing
@@ -86,34 +144,69 @@
          :name "mcclim-render-stack-events")))
 
 (defun event-loop (port)
-  "Process SDL3 events and dispatch to CLIM."
+  "Process SDL3 events and enqueue CLIM events for later dispatch.
+   The SDL3 event thread polls SDL and translates events to CLIM format,
+   then enqueues them. McCLIM's main thread dequeues via process-next-event."
   (rs-sdl3:with-sdl3-event (ev)
     (loop until (port-quit-requested port)
           do (loop while (rs-sdl3:poll-event ev)
-                   do (handle-sdl3-event port ev))
-             (sleep 0.001))))  ; Small sleep to prevent busy-waiting
+                   do (let ((clim-event (translate-sdl3-event port ev)))
+                        (when clim-event
+                          (port-enqueue-event port clim-event))))
+               (sleep 0.001))))  ; Small sleep to prevent busy-waiting
 
-(defun handle-sdl3-event (port event)
-  "Handle a single SDL3 event."
+(defun translate-sdl3-event (port event)
+  "Translate a single SDL3 event to a CLIM event.
+   Returns a CLIM event object, or NIL if the event should be ignored."
   (let ((event-type (rs-sdl3:get-event-type event)))
     (case event-type
       (:quit
        (setf (port-quit-requested port) t)
-       ;; Notify CLIM to quit
-       (dispatch-event port (make-instance 'window-destroy-event
-                                           :sheet (port-window port))))
+       (make-instance 'window-destroy-event
+                      :sheet (port-window port)))
+
       (:window-close-requested
-       (setf (port-quit-requested port) t))
-      (:key-down
-       (let ((keycode (rs-sdl3:keyboard-event-keycode event)))
-         (when (= keycode %sdl3:+k-escape+)
-           (setf (port-quit-requested port) t))))
+       (setf (port-quit-requested port) t)
+       (make-instance 'window-manager-delete-event
+                      :sheet (port-window port)))
+
       (:window-resized
        ;; Window was resized - update surface
        (when (port-delegate port)
-         (update-delegate-surface (port-delegate port))))
-      ;; TODO: Handle more event types
-      )))
+         (update-delegate-surface (port-delegate port)))
+       ;; TODO: Create window-configuration-event with new size
+       nil)
+
+      (:key-down
+       ;; For now, just handle escape to quit
+       ;; Full keyboard translation in bd-7eh.17
+       (let ((keycode (rs-sdl3:keyboard-event-keycode event)))
+         (when (= keycode %sdl3:+k-escape+)
+           (setf (port-quit-requested port) t))
+         nil))  ; TODO: Return key-press-event
+
+      (:key-up
+       ;; TODO: Return key-release-event in bd-7eh.17
+       nil)
+
+      (:mouse-button-down
+       ;; TODO: Return pointer-button-press-event in bd-7eh.18
+       nil)
+
+      (:mouse-button-up
+       ;; TODO: Return pointer-button-release-event in bd-7eh.18
+       nil)
+
+      (:mouse-motion
+       ;; TODO: Return pointer-motion-event in bd-7eh.19
+       nil)
+
+      (:mouse-wheel
+       ;; TODO: Return pointer-scroll-event in bd-7eh.19
+       nil)
+
+      ;; Ignore unhandled events for now
+      (t nil))))
 
 ;;; ============================================================================
 ;;; Port Protocol Methods
@@ -153,18 +246,49 @@
   (rs-sdl3:quit-sdl3))
 
 (defmethod process-next-event ((port render-stack-port) &key wait-function timeout)
-  "Process the next event (called by McCLIM's event loop)."
-  (declare (ignore wait-function timeout))
-  ;; Events are handled in the separate event thread
-  ;; This method is called by McCLIM's main loop
-  (sleep 0.01)  ; Yield to prevent busy-waiting
-  (not (port-quit-requested port)))
+  "Process the next event from the queue (called by McCLIM's main loop).
+
+   This is the main integration point between SDL3 events and McCLIM.
+   The SDL3 event thread enqueues events, and this method dequeues and dispatches them.
+
+   Parameters:
+     wait-function - called periodically to check if we should continue waiting
+     timeout - maximum time to wait for an event (in seconds)
+
+   Returns T if events may still be available, NIL if port is shutting down."
+  ;; Check if we should quit
+  (when (port-quit-requested port)
+    (return-from process-next-event nil))
+
+  ;; Try to get an event from the queue
+  (let ((event (port-dequeue-event port (or timeout 0.01))))
+    (when event
+      ;; Dispatch the event to its sheet
+      (dispatch-event port event))
+
+    ;; Call wait-function if provided
+    (when wait-function
+      (unless (funcall wait-function)
+        (return-from process-next-event nil)))
+
+    ;; Return T to indicate we should be called again
+    (not (port-quit-requested port))))
 
 (defmethod get-next-event ((port render-stack-port) &key wait-function timeout)
-  "Get the next event from the queue."
-  (declare (ignore wait-function timeout))
-  ;; TODO: Implement proper event queue
-  nil)
+  "Get the next event from the queue without dispatching it.
+
+   Parameters:
+     wait-function - called periodically to check if we should continue waiting
+     timeout - maximum time to wait for an event (in seconds)
+
+   Returns the event, or NIL if no event available."
+  ;; Call wait-function if provided
+  (when wait-function
+    (unless (funcall wait-function)
+      (return-from get-next-event nil)))
+
+  ;; Try to get an event from the queue
+  (port-dequeue-event port timeout))
 
 (defmethod port-force-output ((port render-stack-port))
   "Flush pending drawing operations."

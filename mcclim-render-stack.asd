@@ -5,6 +5,8 @@
   :license "MIT"
   :depends-on (:mcclim
                :render-stack
+               :render-stack-sdl3
+               :flutter-render-stack
                :alexandria
                :log4cl)
   :components ((:module "src"
@@ -12,7 +14,8 @@
                              (:file "port" :depends-on ("package"))
                              (:file "medium" :depends-on ("port"))
                              (:file "graft" :depends-on ("port"))
-                             (:file "frame-manager" :depends-on ("graft")))))
+                             (:file "frame-manager" :depends-on ("graft"))
+                             (:file "render-delegate" :depends-on ("port")))))
   :in-order-to ((test-op (test-op "mcclim-render-stack/tests"))))
 
 (asdf:defsystem :mcclim-render-stack/tests

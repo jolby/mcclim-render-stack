@@ -253,11 +253,27 @@
 ;;; Medium state
 
 (defmethod medium-finish-output ((medium render-stack-medium))
-  ;; Ensure all drawing is complete
+  "Ensure all drawing is complete.
+
+   For render-stack, the render engine runs continuously and handles
+   buffer swapping automatically. This method is a no-op in Phase 1.
+
+   In Phase 4 with full McCLIM integration, this will coordinate with
+   the render engine to ensure drawing commands are processed."
+  ;; Phase 1: No-op - render engine handles frame presentation
+  ;; Phase 4: Will signal render engine to present current frame
   )
 
 (defmethod medium-force-output ((medium render-stack-medium))
-  ;; Flush pending drawing operations
+  "Force any pending output to the display.
+
+   For render-stack, drawing happens immediately when medium methods
+   are called during the render delegate's draw callback.
+
+   In Phase 4 with full McCLIM integration, this will trigger an
+   immediate frame render if needed."
+  ;; Phase 1: No-op - drawing is immediate within render delegate callback
+  ;; Phase 4: Will trigger immediate frame presentation
   )
 
 (defmethod medium-clear-area ((medium render-stack-medium) left top right bottom)

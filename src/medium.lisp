@@ -83,6 +83,53 @@
          (when ,color-source
            (frs:release-color-source ,color-source))))))
 
+;;; Line Style Support
+
+(defun configure-paint-for-stroke (paint line-style medium)
+  "Configure paint for stroke drawing based on CLIM line style.
+
+   Arguments:
+     paint      - Impeller paint object
+     line-style - CLIM line style (or nil for default)
+     medium     - The medium (for computing effective thickness)
+
+   Maps CLIM line properties to Impeller paint settings:
+   - Thickness -> stroke-width
+   - Cap shape -> stroke-cap (:butt, :round, :square)
+   - Join shape -> stroke-join (:miter, :round, :bevel)"
+  (let ((thickness (clime:line-style-effective-thickness
+                    (or line-style (medium-line-style medium))
+                    medium)))
+    (frs:paint-set-draw-style paint :stroke)
+    (frs:paint-set-stroke-width paint (float thickness 1.0f0))
+    ;; Map CLIM line cap to Impeller
+    ;; CLIM: :butt, :round, :square, :no-end-point
+    ;; Impeller: :butt, :round, :square
+    (frs:paint-set-stroke-cap
+     paint
+     (if line-style
+         (case (line-style-cap-shape line-style)
+           (:butt :butt)
+           (:round :round)
+           (:square :square)
+           (:no-end-point :butt)  ; closest match
+           (t :butt))
+         :butt))
+    ;; Map CLIM line join to Impeller
+    ;; CLIM: :miter, :round, :bevel, :none
+    ;; Impeller: :miter, :round, :bevel
+    (let ((join (if line-style
+                    (line-style-joint-shape line-style)
+                    :miter)))
+      (frs:paint-set-stroke-join
+       paint
+       (case join
+         (:miter :miter)
+         (:round :round)
+         (:bevel :bevel)
+         (:none :bevel)  ; closest match
+         (t :miter))))))
+
 ;;; Medium drawing operations
 ;;; These will be implemented using flutter-render-stack (Impeller)
 

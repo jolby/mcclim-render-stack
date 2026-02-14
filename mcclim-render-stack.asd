@@ -21,9 +21,11 @@
 
 (asdf:defsystem :mcclim-render-stack/tests
   :depends-on (:mcclim-render-stack
-               :fiveam)
+               :parachute
+               :uiop)
   :components ((:module "test"
-                 :components ((:file "package")
-                              (:file "backend-tests" :depends-on ("package"))
-                              (:file "ink-conversion-tests" :depends-on ("package" "backend-tests")))))
-  :perform (test-op (op c) (symbol-call :fiveam :run! :mcclim-render-stack)))
+                  :components ((:file "package")
+                               (:file "backend-tests" :depends-on ("package"))
+                               (:file "ink-conversion-tests" :depends-on ("package" "backend-tests")))))
+  :perform (test-op (op c)
+                    (uiop:symbol-call :parachute :test :mcclim-render-stack-tests)))

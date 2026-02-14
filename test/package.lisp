@@ -1,7 +1,7 @@
 (defpackage :mcclim-render-stack-tests
-  (:use :cl :fiveam :mcclim-render-stack))
+  (:use :cl :parachute :mcclim-render-stack))
 
 (in-package :mcclim-render-stack-tests)
 
-(def-suite :mcclim-render-stack
-  :description "Tests for the mcclim-render-stack backend.")
+(define-test mcclim-render-stack-suite
+  "Top-level test suite for mcclim-render-stack backend.")

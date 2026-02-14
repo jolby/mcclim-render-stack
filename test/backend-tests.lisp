@@ -1,31 +1,35 @@
+;;;; backend-tests.lisp — Tests for the mcclim-render-stack backend
+
 (in-package :mcclim-render-stack-tests)
 
-(in-suite :mcclim-render-stack)
+;;; Basic tests
 
-;;; Basic tests - these will be expanded as implementation progresses
-
-(test server-path-registered
+(define-test server-path-registered
+  :parent mcclim-render-stack-suite
   "Test that the :render-stack server path is registered."
-  (is (not (null (get :render-stack :port-type)))))
+  (true (not (null (get :render-stack :port-type)))))
 
-(test port-creation
+(define-test port-creation
+  :parent mcclim-render-stack-suite
   "Test basic port creation."
   (let ((port (make-instance 'render-stack-port)))
-    (is (typep port 'render-stack-port))
-    (is (null (render-stack-port-pipeline port)))))
+    (true (typep port 'render-stack-port))
+    (true (null (render-stack-port-pipeline port)))))
 
-(test medium-creation
+(define-test medium-creation
+  :parent mcclim-render-stack-suite
   "Test basic medium creation."
   (let ((medium (make-instance 'render-stack-medium)))
-    (is (typep medium 'render-stack-medium))))
+    (true (typep medium 'render-stack-medium))))
 
-(test graft-dimensions
+(define-test graft-dimensions
+  :parent mcclim-render-stack-suite
   "Test graft dimension queries."
   (let ((graft (make-instance 'render-stack-graft)))
-    (is (numberp (graft-width graft)))
-    (is (numberp (graft-height graft)))
-    (is (plusp (graft-width graft)))
-    (is (plusp (graft-height graft)))))
+    (true (numberp (graft-width graft)))
+    (true (numberp (graft-height graft)))
+    (true (plusp (graft-width graft)))
+    (true (plusp (graft-height graft)))))
 
 ;;; Phase 1 Integration Test
 
@@ -144,7 +148,8 @@
 
       (frs:release-paint paint))))
 
-(test phase-1-visual-test-exists
+(define-test phase-1-visual-test-exists
+  :parent mcclim-render-stack-suite
   "Test that the Phase 1 visual test function exists."
-  (is (fboundp 'run-phase-1-visual-test))
-  (is (fboundp 'draw-phase-1-test-pattern)))
+  (true (fboundp 'run-phase-1-visual-test))
+  (true (fboundp 'draw-phase-1-test-pattern)))

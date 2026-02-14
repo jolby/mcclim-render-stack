@@ -33,13 +33,6 @@
   (declare (ignore cursor-enum))
   nil)
 
-(defmethod set-sheet-pointer-cursor
-    ((port render-stack-port) sheet cursor)
-  "Set the pointer cursor when pointer enters a sheet.
-   Currently a stub."
-  (declare (ignore sheet cursor))
-  nil)
-
 ;;; ============================================================================
 ;;; Pointer Position Tracking
 ;;; ============================================================================

@@ -7,16 +7,14 @@
              :documentation "List of available displays from SDL3."))
   (:documentation "McCLIM graft representing an SDL3 display."))
 
-(defmethod graft-width ((graft render-stack-graft) &key units)
-  ;; Return the width of the display
-  (declare (ignore units))
-  ;; Stub - will query SDL3 for actual display dimensions
+(defun graft-width (graft)
+  "Return the width of the graft in pixels."
+  (declare (ignore graft))
   1920)
 
-(defmethod graft-height ((graft render-stack-graft) &key units)
-  ;; Return the height of the display
-  (declare (ignore units))
-  ;; Stub - will query SDL3 for actual display dimensions
+(defun graft-height (graft)
+  "Return the height of the graft in pixels."
+  (declare (ignore graft))
   1080)
 
 (defmethod graft-orientation ((graft render-stack-graft))

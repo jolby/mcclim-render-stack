@@ -36,11 +36,17 @@
    ;; Frame manager
    #:render-stack-frame-manager
 
-   ;; Render delegate
-   #:clim-render-delegate
+    ;; Render delegate
+    #:clim-render-delegate
 
-   ;; Server path
-   #:initialize-render-stack))
+    ;; Server path
+    #:initialize-render-stack
+
+    ;; Test helpers
+    #:graft-width
+    #:graft-height
+    #:make-rgba-color
+    #:rgba-color))
 
 (in-package :mcclim-render-stack)
 

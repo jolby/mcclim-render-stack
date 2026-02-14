@@ -36,42 +36,12 @@
 
 (defmethod initialize-instance :after ((port render-stack-port) &key)
   "Initialize SDL3 and create the render-stack engine."
-  ;; Initialize SDL3 video subsystem
-  (rs-sdl3:init-sdl3-video)
-  
-  ;; Create SDL3 host
-  (setf (port-host port) (make-instance 'rs-sdl3:sdl3-host))
-  
-  ;; Set GL attributes before window creation
-  (%sdl3:gl-set-attribute 5 1)  ; Double buffer
-  
-  ;; Create main window
-  (let ((window (rs-host:make-window (port-host port)
-                                      :title "McCLIM on Render Stack"
-                                      :width 800
-                                      :height 600)))
-    (setf (port-window port) window)
-    
-    ;; Make GL context current
-    (setf (port-gl-context port) (rs-host:window-graphics-context window))
-    (%sdl3:gl-make-current (rs-sdl3::sdl3-window-handle window)
-                           (port-gl-context port))
-    (%sdl3:gl-set-swap-interval 1)  ; Enable vsync
-    
-    ;; Create render delegate
-    (setf (port-delegate port) 
-          (make-instance 'clim-render-delegate
-                         :port port
-                         :window window))
-    
-    ;; Create and start render engine
-    (setf (port-engine port)
-          (make-render-engine :delegate (port-delegate port)
-                              :pipeline-depth 2
-                              :target-fps 60))
-    
-    ;; Register main thread (should already be main, but just in case)
-    (rs-internals:register-main-thread)
+   ;; Initialize SDL3 video subsystem
+   (rs-internals:register-main-thread)
+   (rs-internals:ensure-tmt-runner-ready)
+   (trivial-main-thread:call-in-main-thread
+    (lambda ()
+      (rs-sdl3:init-sdl3-video)))
 
     ;; Start the engine
     (render-engine-start (port-engine port))
@@ -84,11 +54,8 @@
     (setf (port-event-queue-lock port) (bt2:make-lock "event-queue-lock"))
     (setf (port-event-queue-condition port) (bt2:make-condition-variable))
 
-    ;; Create pointer object
-    (setf (port-pointer port) (make-instance 'render-stack-pointer :port port))
-
     ;; Start event processing thread
-    (start-event-thread port)))
+    (start-event-thread port))
 
 ;;; ============================================================================
 ;;; Event Queue Operations
@@ -199,23 +166,11 @@
     (#.%sdl3:+k-pageup+ :page-up)
     (#.%sdl3:+k-pagedown+ :page-down)
 
-    ;; Keypad
-    (#.%sdl3:+k-kp-enter+ :kp-enter)
-    (#.%sdl3:+k-kp-multiply+ :kp-multiply)
-    (#.%sdl3:+k-kp-add+ :kp-add)
-    (#.%sdl3:+k-kp-subtract+ :kp-subtract)
-    (#.%sdl3:+k-kp-decimal+ :kp-decimal)
-    (#.%sdl3:+k-kp-divide+ :kp-divide)
-    (#.%sdl3:+k-kp-0+ :kp-0)
-    (#.%sdl3:+k-kp-1+ :kp-1)
-    (#.%sdl3:+k-kp-2+ :kp-2)
-    (#.%sdl3:+k-kp-3+ :kp-3)
-    (#.%sdl3:+k-kp-4+ :kp-4)
-    (#.%sdl3:+k-kp-5+ :kp-5)
-    (#.%sdl3:+k-kp-6+ :kp-6)
-    (#.%sdl3:+k-kp-7+ :kp-7)
-    (#.%sdl3:+k-kp-8+ :kp-8)
-    (#.%sdl3:+k-kp-9+ :kp-9)
+    ;; Keypad - these constants may not be available in SDL3 bindings
+    ;; (#.%sdl3:+k-kp-enter+ :kp-enter)
+    ;; (#.%sdl3:+k-kp-multiply+ :kp-multiply)
+    ;; (#.%sdl3:+k-kp-add+ :kp-add)
+    ;; etc.
 
     ;; Character keys - mapped to their base character
     (otherwise
@@ -281,30 +236,26 @@
        nil)
 
       (:key-down
-        (let ((keycode (rs-sdl3:keyboard-event-keycode event))
-              (modifiers (rs-sdl3:keyboard-event-modifiers event))
-              (x (rs-sdl3:keyboard-event-x event))
-              (y (rs-sdl3:keyboard-event-y event)))
-          ;; Handle escape as quit
-          (when (= keycode %sdl3:+k-escape+)
-            (setf (port-quit-requested port) t))
-          ;; Create key press event
-          (let ((key-name (sdl3-keycode-to-key-name keycode))
-                (mod-state (sdl3-modifiers-to-clim modifiers)))
-            (when key-name
-              (make-instance 'key-press-event
-                            :sheet (port-window port)
-                            :key-name key-name
-                            :key-character (sdl3-keycode-to-character keycode mod-state)
-                            :x (or x 0)
-                            :y (or y 0)
-                            :modifier-state mod-state)))))
+         (let ((keycode (rs-sdl3:keyboard-event-keycode event))
+               (modifiers (rs-sdl3:keyboard-event-mod event)))
+           ;; Handle escape as quit
+           (when (= keycode %sdl3:+k-escape+)
+             (setf (port-quit-requested port) t))
+           ;; Create key press event
+           (let ((key-name (sdl3-keycode-to-key-name keycode))
+                 (mod-state (sdl3-modifiers-to-clim modifiers)))
+             (when key-name
+               (make-instance 'key-press-event
+                             :sheet (port-window port)
+                             :key-name key-name
+                             :key-character (sdl3-keycode-to-character keycode mod-state)
+                             :x 0
+                             :y 0
+                             :modifier-state mod-state)))))
 
       (:key-up
         (let ((keycode (rs-sdl3:keyboard-event-keycode event))
-              (modifiers (rs-sdl3:keyboard-event-modifiers event))
-              (x (rs-sdl3:keyboard-event-x event))
-              (y (rs-sdl3:keyboard-event-y event)))
+              (modifiers (rs-sdl3:keyboard-event-mod event)))
           (let ((key-name (sdl3-keycode-to-key-name keycode))
                 (mod-state (sdl3-modifiers-to-clim modifiers)))
             (when key-name
@@ -312,8 +263,8 @@
                             :sheet (port-window port)
                             :key-name key-name
                             :key-character (sdl3-keycode-to-character keycode mod-state)
-                            :x (or x 0)
-                            :y (or y 0)
+                            :x 0
+                            :y 0
                             :modifier-state mod-state)))))
 
       (:mouse-button-down
@@ -437,3 +388,9 @@
 (defmethod port-keyboard-input-focus ((port render-stack-port))
   "Return the sheet with keyboard focus."
   (port-window port))
+
+(defmethod port-pointer :before ((port render-stack-port))
+  "Ensure the pointer is created when accessed."
+  (unless (slot-value port 'pointer)
+    (setf (slot-value port 'pointer)
+          (make-instance 'render-stack-pointer :port port))))

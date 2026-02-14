@@ -23,9 +23,44 @@
          (delegate (when port (port-delegate port))))
     (get-delegate-current-builder delegate)))
 
-;;; Ink Conversion Utilities
-;;; Converts CLIM inks (colors, +foreground-ink+, +background-ink+, etc.)
-;;; to Impeller RGBA color values (floats 0.0-1.0).
+;;; CLIM Internal Functions
+
+(defclass rgba-color (clim:color)
+  ((red :initarg :red :initform 0.0 :type (real 0 1) :accessor color-red)
+   (green :initarg :green :initform 0.0 :type (real 0 1) :accessor color-green)
+   (blue :initarg :blue :initform 0.0 :type (real 0 1) :accessor color-blue)
+   (alpha :initarg :alpha :initform 1 :type (real 0 1) :accessor color-alpha)))
+
+(defmethod clime:color-rgba ((color rgba-color))
+  "Return the RGBA components of an rgba-color."
+  (values (color-red color) (color-green color) (color-blue color) (color-alpha color)))
+
+(defmethod clim:color-rgb ((color rgba-color))
+  "Return the RGB components of an rgba-color."
+  (values (color-red color) (color-green color) (color-blue color)))
+
+(defun clim::%set-color-alpha (color alpha)
+  "Set the alpha component of a color.
+   For RGB colors, returns a new RGBA color with the specified alpha.
+   For RGBA colors, modifies the alpha component in place.
+   For other color types, returns the color unchanged."
+   (typecase color
+     (clim:color
+      (multiple-value-bind (r g b) (clim:color-rgb color)
+        (make-instance 'rgba-color
+                       :red r
+                       :green g
+                       :blue b
+                       :alpha alpha)))
+    (rgba-color
+     (setf (slot-value color 'alpha) alpha)
+     color)
+    (t color)))
+
+(defun make-rgba-color (red green blue &optional (alpha 1.0))
+  "Create a color with alpha channel support.
+   Unlike make-rgb-color, this supports transparency."
+  (make-instance 'rgba-color :red red :green green :blue blue :alpha alpha))
 
 (defun clim-ink-to-impeller-color (ink medium)
   "Convert a CLIM ink to Impeller RGBA color values.
@@ -52,6 +87,11 @@
       (medium-background medium) medium))
     ((null ink)
      (values 0.0f0 0.0f0 0.0f0 1.0f0))
+    ((typep ink 'rgba-color)
+     (values (float (color-red ink) 1.0f0)
+             (float (color-green ink) 1.0f0)
+             (float (color-blue ink) 1.0f0)
+             (float (color-alpha ink) 1.0f0)))
     ((typep ink 'clim:color)
      (multiple-value-bind (r g b a)
          (clime:color-rgba ink)

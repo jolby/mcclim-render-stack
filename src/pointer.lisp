@@ -1,0 +1,161 @@
+;;;; pointer.lisp — Pointer (mouse) handling for McCLIM render-stack backend
+
+(in-package :mcclim-render-stack)
+
+;;; ============================================================================
+;;; Pointer Class
+;;; ============================================================================
+
+(defclass render-stack-pointer (standard-pointer)
+  ((button-state :accessor pointer-button-state-cache :initform +pointer-no-button+
+                 :documentation "Cached button state for the pointer.")
+   (last-x :accessor pointer-last-x :initform 0 :type real
+          :documentation "Last known X position.")
+   (last-y :accessor pointer-last-y :initform 0 :type real
+          :documentation "Last known Y position."))
+  (:documentation "Pointer class for the render-stack backend.
+                   Represents the mouse pointer device."))
+
+;;; ============================================================================
+;;; Port Pointer Protocol
+;;; ============================================================================
+
+(defmethod climi:port-pointer ((port render-stack-port))
+  "Return the pointer for this port, creating it if needed."
+  (or (call-next-method)
+      (setf (climi:port-pointer port)
+            (make-instance 'render-stack-pointer :port port))))
+
+;;; ============================================================================
+;;; Modifier State Protocol
+;;; ============================================================================
+
+(defmethod climi:port-modifier-state ((port render-stack-port))
+  "Return the current keyboard modifier state."
+  (port-modifier-state port))
+
+(defun update-port-modifier-state (port sdl3-mod)
+  "Update the port's modifier state from SDL3 modifier bitmask."
+  (setf (port-modifier-state port)
+        (sdl3-mod-to-clim-mod sdl3-mod)))
+
+;;; ============================================================================
+;;; Cursor Management
+;;; ============================================================================
+
+(defun map-clim-cursor-to-sdl3 (cursor-name)
+  "Map CLIM cursor keyword to SDL3 system cursor enum value.
+   Returns the SDL3 cursor enum or :default if unmapped."
+  (case cursor-name
+    ((:default :arrow) :default)
+    ((:prompt :text :i-beam) :text)
+    ((:button :hand :pointer :grab) :pointer)
+    ((:busy :wait) :wait)
+    ((:not-allowed :forbidden) :no)
+    ((:move) :move)
+    ((:arrow-we) :ew-resize)
+    ((:arrow-ns) :ns-resize)
+    ((:arrow-nwse) :nwse-resize)
+    ((:arrow-nesw) :nesw-resize)
+    (otherwise :default)))
+
+(defun set-sdl3-system-cursor (cursor-enum)
+  "Create and set SDL3 system cursor.
+   CURSOR-ENUM should be an SDL3 system cursor enum value (keyword)."
+  (let ((cursor (rs-sdl3:create-system-cursor cursor-enum)))
+    (unless (cffi:null-pointer-p cursor)
+      (rs-sdl3:set-cursor cursor)
+      t)))
+
+(defmethod (setf climi:pointer-cursor)
+    ((design symbol) (pointer render-stack-pointer))
+  "Set pointer cursor from CLIM cursor keyword."
+  (let ((sdl3-cursor (map-clim-cursor-to-sdl3 design)))
+    (set-sdl3-system-cursor sdl3-cursor)))
+
+(defmethod climi:set-sheet-pointer-cursor
+    ((port render-stack-port) (sheet climi::mirrored-sheet-mixin) cursor)
+  "Set the pointer cursor when pointer enters a sheet.
+   Only sets if the pointer is currently over the sheet's mirror."
+  (declare (ignore sheet cursor))
+  nil)
+
+;;; ============================================================================
+;;; Pointer Position Tracking
+;;; ============================================================================
+
+(defmethod pointer-position ((pointer render-stack-pointer))
+  "Return the current pointer position as two values: x, y."
+  (values (pointer-last-x pointer)
+          (pointer-last-y pointer)))
+
+(defun update-pointer-position (pointer x y)
+  "Update the cached pointer position."
+  (setf (pointer-last-x pointer) x
+        (pointer-last-y pointer) y))
+
+;;; ============================================================================
+;;; Pointer Button State
+;;; ============================================================================
+
+(defmethod pointer-button-state ((pointer render-stack-pointer))
+  "Return the current pointer button state."
+  (pointer-button-state-cache pointer))
+
+(defun update-pointer-button-state (pointer button pressed)
+  "Update the pointer button state.
+   BUTTON is a CLIM pointer button constant (:left, :middle, :right, etc.)
+   PRESSED is T if the button was pressed, NIL if released."
+  (let ((current-state (pointer-button-state-cache pointer)))
+    (if pressed
+        (setf (pointer-button-state-cache pointer)
+              (logior current-state
+                      (case button
+                        (:left +pointer-left-button+)
+                        (:middle +pointer-middle-button+)
+                        (:right +pointer-right-button+)
+                        (:wheel-up +pointer-wheel-up+)
+                        (:wheel-down +pointer-wheel-down+)
+                        (:wheel-left +pointer-wheel-left+)
+                        (:wheel-right +pointer-wheel-right+)
+                        (t 0))))
+        (setf (pointer-button-state-cache pointer)
+              (logandc1 (case button
+                          (:left +pointer-left-button+)
+                          (:middle +pointer-middle-button+)
+                          (:right +pointer-right-button+)
+                          (:wheel-up +pointer-wheel-up+)
+                          (:wheel-down +pointer-wheel-down+)
+                          (:wheel-left +pointer-wheel-left+)
+                          (:wheel-right +pointer-wheel-right+)
+                          (t 0))
+                        current-state)))))
+
+;;; ============================================================================
+;;; SDL3 Modifier to CLIM Modifier Conversion
+;;; ============================================================================
+
+(defun sdl3-mod-to-clim-mod (sdl3-mod)
+  "Convert SDL3 modifier bitmask to CLIM modifier state."
+  (let ((mod 0))
+    (when (logtest sdl3-mod 1)   ; KMOD_LSHIFT
+      (setf mod (logior mod +shift-key+)))
+    (when (logtest sdl3-mod 2)   ; KMOD_RSHIFT
+      (setf mod (logior mod +shift-key+)))
+    (when (logtest sdl3-mod 4)   ; KMOD_LCTRL
+      (setf mod (logior mod +control-key+)))
+    (when (logtest sdl3-mod 8)   ; KMOD_RCTRL
+      (setf mod (logior mod +control-key+)))
+    (when (logtest sdl3-mod 16)  ; KMOD_LALT
+      (setf mod (logior mod +meta-key+)))
+    (when (logtest sdl3-mod 32)  ; KMOD_RALT
+      (setf mod (logior mod +meta-key+)))
+    (when (logtest sdl3-mod 64)  ; KMOD_LGUI (Super/Windows)
+      (setf mod (logior mod +super-key+)))
+    (when (logtest sdl3-mod 128) ; KMOD_RGUI
+      (setf mod (logior mod +super-key+)))
+    (when (logtest sdl3-mod 256) ; KMOD_NUM
+      (setf mod (logior mod +num-lock-key+)))
+    (when (logtest sdl3-mod 512) ; KMOD_CAPS
+      (setf mod (logior mod +lock-key+)))
+    mod))

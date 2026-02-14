@@ -10,12 +10,13 @@
                :alexandria
                :log4cl)
   :components ((:module "src"
-                :components ((:file "package")
-                             (:file "port" :depends-on ("package"))
-                             (:file "medium" :depends-on ("port"))
-                             (:file "graft" :depends-on ("port"))
-                             (:file "frame-manager" :depends-on ("graft"))
-                             (:file "render-delegate" :depends-on ("port")))))
+                 :components ((:file "package")
+                              (:file "pointer" :depends-on ("package"))
+                              (:file "port" :depends-on ("package" "pointer"))
+                              (:file "medium" :depends-on ("port"))
+                              (:file "graft" :depends-on ("port"))
+                              (:file "frame-manager" :depends-on ("graft"))
+                              (:file "render-delegate" :depends-on ("port")))))
   :in-order-to ((test-op (test-op "mcclim-render-stack/tests"))))
 
 (asdf:defsystem :mcclim-render-stack/tests

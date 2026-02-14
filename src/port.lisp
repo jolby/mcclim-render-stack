@@ -23,9 +23,13 @@
    (event-queue :accessor port-event-queue :initform nil
                 :documentation "Thread-safe queue for CLIM events.")
    (event-queue-lock :accessor port-event-queue-lock :initform nil
-                     :documentation "Lock for synchronizing access to event queue.")
+                    :documentation "Lock for synchronizing access to event queue.")
    (event-queue-condition :accessor port-event-queue-condition :initform nil
-                          :documentation "Condition variable for blocking on empty queue."))
+                         :documentation "Condition variable for blocking on empty queue.")
+   (pointer :accessor port-pointer-cache :initform nil
+            :documentation "Cached pointer object.")
+   (modifier-state :accessor port-modifier-state :initform 0
+                   :documentation "Current keyboard modifier state."))
   (:documentation "McCLIM port using render-stack (SDL3 + Impeller)."))
 
 ;;; ============================================================================
@@ -133,6 +137,104 @@
     (= (fill-pointer (port-event-queue port)) 0)))
 
 ;;; ============================================================================
+;;; Keyboard Event Translation
+;;; ============================================================================
+
+(defun sdl3-modifiers-to-clim (sdl3-mod)
+  "Convert SDL3 modifier bitmask to CLIM modifier state.
+   SDL3 uses bitmask: shift=3, ctrl=192, alt=768, gui=1024/2048"
+  (let ((mod 0))
+    (when (plusp (logand sdl3-mod 3))   ; Either shift
+      (setf mod (logior mod clim:+shift-key+)))
+    (when (plusp (logand sdl3-mod 192)) ; Either ctrl
+      (setf mod (logior mod clim:+control-key+)))
+    (when (plusp (logand sdl3-mod 768)) ; Either alt
+      (setf mod (logior mod clim:+meta-key+)))
+    (when (plusp (logand sdl3-mod 1024)) ; Left gui/super
+      (setf mod (logior mod clim:+super-key+)))
+    (when (plusp (logand sdl3-mod 2048)) ; Right gui/super
+      (setf mod (logior mod clim:+hyper-key+)))
+    mod))
+
+(defun sdl3-keycode-to-key-name (keycode)
+  "Convert SDL3 keycode to CLIM key-name symbol.
+   Based on SDL3 scancode constants."
+  (case keycode
+    ;; Function keys
+    (#.%sdl3:+k-f1+ :f1)
+    (#.%sdl3:+k-f2+ :f2)
+    (#.%sdl3:+k-f3+ :f3)
+    (#.%sdl3:+k-f4+ :f4)
+    (#.%sdl3:+k-f5+ :f5)
+    (#.%sdl3:+k-f6+ :f6)
+    (#.%sdl3:+k-f7+ :f7)
+    (#.%sdl3:+k-f8+ :f8)
+    (#.%sdl3:+k-f9+ :f9)
+    (#.%sdl3:+k-f10+ :f10)
+    (#.%sdl3:+k-f11+ :f11)
+    (#.%sdl3:+k-f12+ :f12)
+
+    ;; Arrow keys
+    (#.%sdl3:+k-up+ :up)
+    (#.%sdl3:+k-down+ :down)
+    (#.%sdl3:+k-right+ :right)
+    (#.%sdl3:+k-left+ :left)
+
+    ;; Special keys
+    (#.%sdl3:+k-return+ :return)
+    (#.%sdl3:+k-escape+ :escape)
+    (#.%sdl3:+k-backspace+ :backspace)
+    (#.%sdl3:+k-tab+ :tab)
+    (#.%sdl3:+k-space+ :space)
+    (#.%sdl3:+k-capslock+ :caps-lock)
+    (#.%sdl3:+k-scrolllock+ :scroll-lock)
+    (#.%sdl3:+k-numlockclear+ :numlock)
+    (#.%sdl3:+k-printscreen+ :print)
+    (#.%sdl3:+k-pause+ :pause)
+    (#.%sdl3:+k-delete+ :delete)
+    (#.%sdl3:+k-insert+ :insert)
+    (#.%sdl3:+k-home+ :home)
+    (#.%sdl3:+k-end+ :end)
+    (#.%sdl3:+k-pageup+ :page-up)
+    (#.%sdl3:+k-pagedown+ :page-down)
+
+    ;; Keypad
+    (#.%sdl3:+k-kp-enter+ :kp-enter)
+    (#.%sdl3:+k-kp-multiply+ :kp-multiply)
+    (#.%sdl3:+k-kp-add+ :kp-add)
+    (#.%sdl3:+k-kp-subtract+ :kp-subtract)
+    (#.%sdl3:+k-kp-decimal+ :kp-decimal)
+    (#.%sdl3:+k-kp-divide+ :kp-divide)
+    (#.%sdl3:+k-kp-0+ :kp-0)
+    (#.%sdl3:+k-kp-1+ :kp-1)
+    (#.%sdl3:+k-kp-2+ :kp-2)
+    (#.%sdl3:+k-kp-3+ :kp-3)
+    (#.%sdl3:+k-kp-4+ :kp-4)
+    (#.%sdl3:+k-kp-5+ :kp-5)
+    (#.%sdl3:+k-kp-6+ :kp-6)
+    (#.%sdl3:+k-kp-7+ :kp-7)
+    (#.%sdl3:+k-kp-8+ :kp-8)
+    (#.%sdl3:+k-kp-9+ :kp-9)
+
+    ;; Character keys - mapped to their base character
+    (otherwise
+     ;; For letters and numbers, return the character
+     (cond
+       ((>= keycode 97) (- keycode 32))  ; a-z → A-Z
+       ((>= keycode 65) keycode)          ; A-Z
+       ((>= keycode 48) keycode)          ; 0-9
+       (t nil)))))
+
+(defun sdl3-keycode-to-character (keycode modifiers)
+  "Convert SDL3 keycode + modifiers to character, or NIL if not printable.
+   This is a simplified version - full IME support would be more complex."
+  (let ((char (sdl3-keycode-to-key-name keycode)))
+    (when (and char
+                (typep char 'character)
+                (not (plusp modifiers)))
+      char)))
+
+;;; ============================================================================
 ;;; Event Processing
 ;;; ============================================================================
 
@@ -178,16 +280,40 @@
        nil)
 
       (:key-down
-       ;; For now, just handle escape to quit
-       ;; Full keyboard translation in bd-7eh.17
-       (let ((keycode (rs-sdl3:keyboard-event-keycode event)))
-         (when (= keycode %sdl3:+k-escape+)
-           (setf (port-quit-requested port) t))
-         nil))  ; TODO: Return key-press-event
+        (let ((keycode (rs-sdl3:keyboard-event-keycode event))
+              (modifiers (rs-sdl3:keyboard-event-modifiers event))
+              (x (rs-sdl3:keyboard-event-x event))
+              (y (rs-sdl3:keyboard-event-y event)))
+          ;; Handle escape as quit
+          (when (= keycode %sdl3:+k-escape+)
+            (setf (port-quit-requested port) t))
+          ;; Create key press event
+          (let ((key-name (sdl3-keycode-to-key-name keycode))
+                (mod-state (sdl3-modifiers-to-clim modifiers)))
+            (when key-name
+              (make-instance 'key-press-event
+                            :sheet (port-window port)
+                            :key-name key-name
+                            :key-character (sdl3-keycode-to-character keycode mod-state)
+                            :x (or x 0)
+                            :y (or y 0)
+                            :modifier-state mod-state)))))
 
       (:key-up
-       ;; TODO: Return key-release-event in bd-7eh.17
-       nil)
+        (let ((keycode (rs-sdl3:keyboard-event-keycode event))
+              (modifiers (rs-sdl3:keyboard-event-modifiers event))
+              (x (rs-sdl3:keyboard-event-x event))
+              (y (rs-sdl3:keyboard-event-y event)))
+          (let ((key-name (sdl3-keycode-to-key-name keycode))
+                (mod-state (sdl3-modifiers-to-clim modifiers)))
+            (when key-name
+              (make-instance 'key-release-event
+                            :sheet (port-window port)
+                            :key-name key-name
+                            :key-character (sdl3-keycode-to-character keycode mod-state)
+                            :x (or x 0)
+                            :y (or y 0)
+                            :modifier-state mod-state)))))
 
       (:mouse-button-down
        ;; TODO: Return pointer-button-press-event in bd-7eh.18
@@ -312,6 +438,7 @@
   (port-window port))
 
 (defmethod port-pointer ((port render-stack-port))
-  "Return the port's pointer."
-  ;; TODO: Implement pointer handling
-  nil)
+  "Return the port's pointer, creating it if needed."
+  (or (port-pointer-cache port)
+      (setf (port-pointer-cache port)
+            (make-instance 'render-stack-pointer :port port))))

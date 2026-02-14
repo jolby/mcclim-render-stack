@@ -6,6 +6,10 @@
                     (:rs-sdl3 :render-stack-sdl3)
                     (:rs-internals :render-stack-internals)
                     (:bt2 :bordeaux-threads))
+  (:import-from :climi
+                #:standard-pointer
+                #:pointer-sheet
+                #:pointer-cursor)
   (:import-from :render-stack
                 #:render-delegate
                 #:make-render-engine
@@ -15,12 +19,15 @@
                 #:render-delegate-end-frame
                 #:render-delegate-notify-idle
                 #:render-delegate-draw)
-  (:export
-   ;; Port
-   #:render-stack-port
-   #:render-stack-port-pipeline
+   (:export
+    ;; Port
+    #:render-stack-port
+    #:render-stack-port-pipeline
 
-   ;; Medium
+    ;; Pointer
+    #:render-stack-pointer
+
+    ;; Medium
    #:render-stack-medium
 
    ;; Graft

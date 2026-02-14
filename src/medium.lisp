@@ -137,12 +137,14 @@
                     :miter)))
       (frs:paint-set-stroke-join
        paint
-       (case join
-         (:miter :miter)
-         (:round :round)
-         (:bevel :bevel)
-         (:none :bevel)  ; closest match
-         (t :miter))))))
+        (case join
+          (:miter :miter)
+          (:round :round)
+          (:bevel :bevel)
+          (:none :bevel)  ; closest match
+          (t :miter))))
+    ;; Apply dash pattern (placeholder - not yet implemented)
+    (apply-line-style-dashes paint line-style)))
 
 ;;; Medium drawing operations
 ;;; These will be implemented using flutter-render-stack (Impeller)

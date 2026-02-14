@@ -156,8 +156,20 @@
   (declare (ignore coord-seq)))
 
 (defmethod medium-draw-line* ((medium render-stack-medium) x1 y1 x2 y2)
-  ;; Draw a line from (x1, y1) to (x2, y2)
-  (declare (ignore x1 y1 x2 y2)))
+  "Draw a line from (x1, y1) to (x2, y2)."
+  (let* ((paint (%get-medium-paint medium))
+         (ink (medium-ink medium))
+         (builder (%get-medium-builder medium)))
+    (when builder
+      (with-ink-on-paint (paint ink medium)
+        (configure-paint-for-stroke paint (medium-line-style medium) medium)
+        (frs:with-path-builder (pb)
+          (frs:path-move-to pb (float x1 1.0f0) (float y1 1.0f0))
+          (frs:path-line-to pb (float x2 1.0f0) (float y2 1.0f0))
+          (let ((path (frs:build-path pb)))
+            (unwind-protect
+                 (frs:draw-path builder path paint)
+              (frs:release-path path))))))))
 
 (defmethod medium-draw-lines* ((medium render-stack-medium) coord-seq)
   ;; Draw multiple lines

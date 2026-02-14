@@ -242,13 +242,86 @@
                    start-angle end-angle filled)))
 
 (defmethod medium-draw-text* ((medium render-stack-medium)
-                               string x y
-                               start end
-                               align-x align-y
-                               toward-x toward-y transform-glyphs)
-  ;; Draw text
-  (declare (ignore string x y start end
-                   align-x align-y toward-x toward-y transform-glyphs)))
+                                string x y
+                                start end
+                                align-x align-y
+                                toward-x toward-y transform-glyphs)
+  "Draw text at position (x, y) with alignment.
+
+   align-x: :left, :center, :right
+   align-y: :top, :center, :baseline, :bottom
+
+   toward-x/y and transform-glyphs are ignored in Phase 2."
+  (declare (ignore toward-x toward-y transform-glyphs))
+  (let* ((builder (%get-medium-builder medium))
+         (port (port medium)))
+    (when builder
+      (let* ((text-style (medium-text-style medium))
+             (substr (subseq string (or start 0) (or end (length string))))
+             (typo-ctx (port-typography-context port))
+             (paint (%get-medium-paint medium))
+             (style (frs:make-paragraph-style)))
+        (unwind-protect
+             (progn
+               ;; Configure text style
+               (multiple-value-bind (family face size)
+                   (text-style-components text-style)
+                 (let ((mapped-family (case family
+                                        (:serif "Roboto Serif")
+                                        (:sans-serif "Roboto")
+                                        (:fix "Roboto Mono")
+                                        (t (or family "Roboto"))))
+                       (mapped-size (case size
+                                      (:tiny 8.0f0)
+                                      (:very-small 10.0f0)
+                                      (:small 12.0f0)
+                                      (:normal 14.0f0)
+                                      (:large 18.0f0)
+                                      (:very-large 24.0f0)
+                                      (:huge 32.0f0)
+                                      (t (float (or size 14) 1.0f0))))
+                       (weight (if (and (listp face) (member :bold face))
+                                   :bold
+                                   :normal))
+                       (slant (if (and (listp face) (member :italic face))
+                                  :italic
+                                  :normal)))
+                   (frs:paragraph-style-set-font-family style mapped-family)
+                   (frs:paragraph-style-set-font-size style mapped-size)
+                   (frs:paragraph-style-set-font-weight style weight)
+                   (frs:paragraph-style-set-font-style style slant)
+                   ;; Set text color from medium ink
+                   (multiple-value-bind (r g b a)
+                       (clim-ink-to-impeller-color (medium-ink medium) medium)
+                     (frs:paint-set-color paint r g b a)
+                     (frs:paragraph-style-set-foreground style paint))))
+               ;; Build paragraph
+               (frs:with-paragraph-builder (pb typo-ctx)
+                 (frs:paragraph-builder-push-style pb style)
+                 (frs:paragraph-builder-add-text pb substr)
+                 (frs:paragraph-builder-pop-style pb)
+                 (let ((paragraph (frs:paragraph-builder-build pb 10000.0f0)))
+                   (unwind-protect
+                        ;; Calculate position with alignment
+                        (let* ((width (frs:paragraph-get-longest-line-width paragraph))
+                               (height (frs:paragraph-get-height paragraph))
+                               (baseline (frs:paragraph-get-alphabetic-baseline paragraph))
+                               (draw-x (float (case align-x
+                                                ((:left nil) x)
+                                                (:center (- x (/ width 2.0)))
+                                                (:right (- x width))
+                                                (t x))
+                                              1.0f0))
+                               (draw-y (float (case align-y
+                                                ((:top nil) y)
+                                                (:center (- y (/ height 2.0)))
+                                                (:baseline (- y baseline))
+                                                (:bottom (- y height))
+                                                (t y))
+                                              1.0f0)))
+                          (frs:draw-paragraph builder paragraph draw-x draw-y))
+                     (frs:release-paragraph paragraph)))))
+          (frs:release-paragraph-style style))))))
 
 ;;; Medium state
 

@@ -299,6 +299,137 @@
                          (float nh 1.0f0)
                          paint))))))
 
+;;; Font Metrics Protocol
+;;; These methods provide text measurement for layout calculations
+
+(defun %text-style-to-paragraph-metrics (text-style medium string)
+  "Create a paragraph from text-style and string, return metrics.
+   Returns (values height baseline width)."
+  (let* ((port (port medium))
+         (typo-ctx (port-typography-context port))
+         (paint (%get-medium-paint medium))
+         (style (frs:make-paragraph-style)))
+    (unwind-protect
+         (progn
+           ;; Configure style from text-style
+           (multiple-value-bind (family face size)
+               (text-style-components text-style)
+             (let ((mapped-family (case family
+                                    (:serif "Roboto Serif")
+                                    (:sans-serif "Roboto")
+                                    (:fix "Roboto Mono")
+                                    (t (or family "Roboto"))))
+                   (mapped-size (case size
+                                  (:tiny 8.0f0)
+                                  (:very-small 10.0f0)
+                                  (:small 12.0f0)
+                                  (:normal 14.0f0)
+                                  (:large 18.0f0)
+                                  (:very-large 24.0f0)
+                                  (:huge 32.0f0)
+                                  (t (float (or size 14) 1.0f0))))
+                   (weight (if (and (listp face) (member :bold face))
+                               :bold
+                               :normal)))
+               (frs:paragraph-style-set-font-family style mapped-family)
+               (frs:paragraph-style-set-font-size style mapped-size)
+               (frs:paragraph-style-set-font-weight style weight)
+               (frs:paragraph-style-set-foreground style paint)))
+           ;; Build paragraph and get metrics
+           (frs:with-paragraph-builder (builder typo-ctx)
+             (frs:paragraph-builder-push-style builder style)
+             (frs:paragraph-builder-add-text builder string)
+             (frs:paragraph-builder-pop-style builder)
+             (let ((paragraph (frs:paragraph-builder-build builder 10000.0f0)))
+               (unwind-protect
+                    (values (frs:paragraph-get-height paragraph)
+                            (frs:paragraph-get-alphabetic-baseline paragraph)
+                            (frs:paragraph-get-longest-line-width paragraph))
+                 (frs:release-paragraph paragraph)))))
+      (frs:release-paragraph-style style))))
+
+(defmethod text-style-ascent ((text-style text-style) (medium render-stack-medium))
+  "Return the ascent (distance above baseline) in pixels."
+  (multiple-value-bind (height baseline width)
+      (%text-style-to-paragraph-metrics text-style medium "M")
+    (declare (ignore height width))
+    (float baseline 1.0f0)))
+
+(defmethod text-style-descent ((text-style text-style) (medium render-stack-medium))
+  "Return the descent (distance below baseline) in pixels."
+  (multiple-value-bind (height baseline width)
+      (%text-style-to-paragraph-metrics text-style medium "M")
+    (declare (ignore width))
+    (float (- height baseline) 1.0f0)))
+
+(defmethod text-style-height ((text-style text-style) (medium render-stack-medium))
+  "Return the total height (ascent + descent) in pixels."
+  (multiple-value-bind (height baseline width)
+      (%text-style-to-paragraph-metrics text-style medium "M")
+    (declare (ignore baseline width))
+    (float height 1.0f0)))
+
+(defmethod text-style-width ((text-style text-style) (medium render-stack-medium))
+  "Return the width of the character 'M' in pixels."
+  (multiple-value-bind (height baseline width)
+      (%text-style-to-paragraph-metrics text-style medium "M")
+    (declare (ignore height baseline))
+    (float width 1.0f0)))
+
+(defmethod text-size ((medium render-stack-medium) string
+                      &key text-style (start 0) end)
+  "Calculate the size of a text string.
+   Returns five values: width, height, final-x, final-y, baseline."
+  (let* ((text-style (or text-style (medium-text-style medium)))
+         (substr (subseq string start (or end (length string))))
+         (port (port medium))
+         (typo-ctx (port-typography-context port))
+         (paint (%get-medium-paint medium))
+         (style (frs:make-paragraph-style)))
+    (unwind-protect
+         (progn
+           ;; Configure style
+           (multiple-value-bind (family face size)
+               (text-style-components text-style)
+             (let ((mapped-family (case family
+                                    (:serif "Roboto Serif")
+                                    (:sans-serif "Roboto")
+                                    (:fix "Roboto Mono")
+                                    (t (or family "Roboto"))))
+                   (mapped-size (case size
+                                  (:tiny 8.0f0)
+                                  (:very-small 10.0f0)
+                                  (:small 12.0f0)
+                                  (:normal 14.0f0)
+                                  (:large 18.0f0)
+                                  (:very-large 24.0f0)
+                                  (:huge 32.0f0)
+                                  (t (float (or size 14) 1.0f0))))
+                   (weight (if (and (listp face) (member :bold face))
+                               :bold
+                               :normal)))
+               (frs:paragraph-style-set-font-family style mapped-family)
+               (frs:paragraph-style-set-font-size style mapped-size)
+               (frs:paragraph-style-set-font-weight style weight)
+               (frs:paragraph-style-set-foreground style paint)))
+           ;; Build paragraph and get metrics
+           (frs:with-paragraph-builder (builder typo-ctx)
+             (frs:paragraph-builder-push-style builder style)
+             (frs:paragraph-builder-add-text builder substr)
+             (frs:paragraph-builder-pop-style builder)
+             (let ((paragraph (frs:paragraph-builder-build builder 10000.0f0)))
+               (unwind-protect
+                    (let ((width (frs:paragraph-get-longest-line-width paragraph))
+                          (height (frs:paragraph-get-height paragraph))
+                          (baseline (frs:paragraph-get-alphabetic-baseline paragraph)))
+                      (values (float width 1.0f0)
+                              (float height 1.0f0)
+                              (float width 1.0f0)
+                              0.0f0
+                              (float baseline 1.0f0)))
+                 (frs:release-paragraph paragraph)))))
+      (frs:release-paragraph-style style))))
+
 (defmethod medium-beep ((medium render-stack-medium))
   ;; Produce an audible beep
   )

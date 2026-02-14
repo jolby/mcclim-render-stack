@@ -17,7 +17,9 @@
    (delegate :accessor port-delegate :initform nil)
    (gl-context :accessor port-gl-context :initform nil)
    (event-thread :accessor port-event-thread :initform nil)
-   (quit-requested :accessor port-quit-requested :initform nil))
+   (quit-requested :accessor port-quit-requested :initform nil)
+   (typography-context :accessor port-typography-context :initform nil
+                       :documentation "Impeller typography context for text rendering."))
   (:documentation "McCLIM port using render-stack (SDL3 + Impeller)."))
 
 ;;; ============================================================================
@@ -62,10 +64,13 @@
     
     ;; Register main thread (should already be main, but just in case)
     (rs-internals:register-main-thread)
-    
+
     ;; Start the engine
     (render-engine-start (port-engine port))
-    
+
+    ;; Create typography context for text rendering
+    (setf (port-typography-context port) (frs:make-typography-context))
+
     ;; Start event processing thread
     (start-event-thread port)))
 
@@ -133,7 +138,12 @@
   (when (port-delegate port)
     (destroy-delegate (port-delegate port))
     (setf (port-delegate port) nil))
-  
+
+  ;; Release typography context
+  (when (port-typography-context port)
+    (frs:release-typography-context (port-typography-context port))
+    (setf (port-typography-context port) nil))
+
   ;; Destroy window
   (when (port-window port)
     (rs-host:destroy-window (port-host port) (port-window port))

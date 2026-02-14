@@ -148,12 +148,38 @@
 ;;; These will be implemented using flutter-render-stack (Impeller)
 
 (defmethod medium-draw-point* ((medium render-stack-medium) x y)
-  ;; Draw a point at (x, y)
-  (declare (ignore x y)))
+  "Draw a single point at (x, y) as a small filled rectangle."
+  (let* ((paint (%get-medium-paint medium))
+         (ink (medium-ink medium))
+         (builder (%get-medium-builder medium)))
+    (when builder
+      (with-ink-on-paint (paint ink medium)
+        (frs:paint-set-draw-style paint :fill)
+        ;; Draw as 1x1 pixel rectangle
+        (frs:draw-rect builder
+                       (float x 1.0f0)
+                       (float y 1.0f0)
+                       1.0f0
+                       1.0f0
+                       paint)))))
 
 (defmethod medium-draw-points* ((medium render-stack-medium) coord-seq)
-  ;; Draw multiple points
-  (declare (ignore coord-seq)))
+  "Draw multiple points from coord-seq (sequence of x y pairs)."
+  (let* ((paint (%get-medium-paint medium))
+         (ink (medium-ink medium))
+         (builder (%get-medium-builder medium))
+         (coords (coerce coord-seq 'vector)))
+    (when (and builder (>= (length coords) 2))
+      (with-ink-on-paint (paint ink medium)
+        (frs:paint-set-draw-style paint :fill)
+        ;; Draw each point as 1x1 rectangle
+        (loop for i from 0 below (length coords) by 2
+              do (frs:draw-rect builder
+                                (float (aref coords i) 1.0f0)
+                                (float (aref coords (1+ i)) 1.0f0)
+                                1.0f0
+                                1.0f0
+                                paint))))))
 
 (defmethod medium-draw-line* ((medium render-stack-medium) x1 y1 x2 y2)
   "Draw a line from (x1, y1) to (x2, y2)."

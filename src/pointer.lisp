@@ -10,34 +10,11 @@
   ((button-state :accessor pointer-button-state-cache :initform +pointer-no-button+
                  :documentation "Cached button state for the pointer.")
    (last-x :accessor pointer-last-x :initform 0 :type real
-          :documentation "Last known X position.")
+           :documentation "Last known X position.")
    (last-y :accessor pointer-last-y :initform 0 :type real
-          :documentation "Last known Y position."))
+           :documentation "Last known Y position."))
   (:documentation "Pointer class for the render-stack backend.
                    Represents the mouse pointer device."))
-
-;;; ============================================================================
-;;; Port Pointer Protocol
-;;; ============================================================================
-
-(defmethod climi:port-pointer ((port render-stack-port))
-  "Return the pointer for this port, creating it if needed."
-  (or (call-next-method)
-      (setf (climi:port-pointer port)
-            (make-instance 'render-stack-pointer :port port))))
-
-;;; ============================================================================
-;;; Modifier State Protocol
-;;; ============================================================================
-
-(defmethod climi:port-modifier-state ((port render-stack-port))
-  "Return the current keyboard modifier state."
-  (port-modifier-state port))
-
-(defun update-port-modifier-state (port sdl3-mod)
-  "Update the port's modifier state from SDL3 modifier bitmask."
-  (setf (port-modifier-state port)
-        (sdl3-mod-to-clim-mod sdl3-mod)))
 
 ;;; ============================================================================
 ;;; Cursor Management
@@ -46,37 +23,20 @@
 (defun map-clim-cursor-to-sdl3 (cursor-name)
   "Map CLIM cursor keyword to SDL3 system cursor enum value.
    Returns the SDL3 cursor enum or :default if unmapped."
-  (case cursor-name
-    ((:default :arrow) :default)
-    ((:prompt :text :i-beam) :text)
-    ((:button :hand :pointer :grab) :pointer)
-    ((:busy :wait) :wait)
-    ((:not-allowed :forbidden) :no)
-    ((:move) :move)
-    ((:arrow-we) :ew-resize)
-    ((:arrow-ns) :ns-resize)
-    ((:arrow-nwse) :nwse-resize)
-    ((:arrow-nesw) :nesw-resize)
-    (otherwise :default)))
+  (declare (ignore cursor-name))
+  :default)
 
 (defun set-sdl3-system-cursor (cursor-enum)
   "Create and set SDL3 system cursor.
-   CURSOR-ENUM should be an SDL3 system cursor enum value (keyword)."
-  (let ((cursor (rs-sdl3:create-system-cursor cursor-enum)))
-    (unless (cffi:null-pointer-p cursor)
-      (rs-sdl3:set-cursor cursor)
-      t)))
+   CURSOR-ENUM should be an SDL3 system cursor enum value (keyword).
+   Currently a stub - cursor support not yet implemented."
+  (declare (ignore cursor-enum))
+  nil)
 
-(defmethod (setf climi:pointer-cursor)
-    ((design symbol) (pointer render-stack-pointer))
-  "Set pointer cursor from CLIM cursor keyword."
-  (let ((sdl3-cursor (map-clim-cursor-to-sdl3 design)))
-    (set-sdl3-system-cursor sdl3-cursor)))
-
-(defmethod climi:set-sheet-pointer-cursor
-    ((port render-stack-port) (sheet climi::mirrored-sheet-mixin) cursor)
+(defmethod set-sheet-pointer-cursor
+    ((port render-stack-port) sheet cursor)
   "Set the pointer cursor when pointer enters a sheet.
-   Only sets if the pointer is currently over the sheet's mirror."
+   Currently a stub."
   (declare (ignore sheet cursor))
   nil)
 

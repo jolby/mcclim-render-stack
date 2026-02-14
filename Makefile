@@ -1,0 +1,54 @@
+SHELL := /bin/sh
+
+CWD := $(shell pwd)
+SBCL ?= sbcl
+QL ?= $(HOME)/quicklisp/setup.lisp
+
+SBCL_FLAGS := --dynamic-space-size 8096 --noinform --disable-debugger --non-interactive
+ASDF_BOOT := --eval '(require :asdf)' --eval "(pushnew \#p\"$(CWD)/\" asdf:*central-registry*)"
+QL_BOOT := --eval '(load "$(QL)")'
+
+.PHONY: all load test test-unit test-integration test-ink test-line-style test-event clean check-quicklisp
+
+all: load
+
+check-quicklisp:
+	@test -f "$(QL)" || { \
+	  echo "Quicklisp not found at $(QL). Override QL=/path/to/quicklisp/setup.lisp"; \
+	  exit 1; \
+	}
+
+load: check-quicklisp
+	$(SBCL) $(SBCL_FLAGS) $(QL_BOOT) $(ASDF_BOOT) \
+	  --eval '(ql:quickload :mcclim-render-stack :force t :silent t)' \
+	  --eval '(format t "~&System loaded successfully.~%")'
+
+test: test-unit
+
+test-unit: check-quicklisp
+	$(SBCL) $(SBCL_FLAGS) $(QL_BOOT) $(ASDF_BOOT) \
+	  --eval '(ql:quickload :mcclim-render-stack/tests :force t :silent t)' \
+	  --eval '(asdf:test-system "mcclim-render-stack")'
+
+test-ink: check-quicklisp
+	$(SBCL) $(SBCL_FLAGS) $(QL_BOOT) $(ASDF_BOOT) \
+	  --eval '(ql:quickload :mcclim-render-stack/tests :force t)' \
+	  --eval '(5am:run! :mcclim-render-stack-tests::ink-conversion-tests)'
+
+test-line-style: check-quicklisp
+	$(SBCL) $(SBCL_FLAGS) $(QL_BOOT) $(ASDF_BOOT) \
+	  --eval '(ql:quickload :mcclim-render-stack/tests :force t)' \
+	  --eval '(5am:run! :mcclim-render-stack-tests::line-style-tests)'
+
+test-event: check-quicklisp
+	$(SBCL) $(SBCL_FLAGS) $(QL_BOOT) $(ASDF_BOOT) \
+	  --eval '(ql:quickload :mcclim-render-stack/tests :force t)' \
+	  --eval '(5am:run! :mcclim-render-stack-tests::event-queue-tests)'
+
+test-integration: check-quicklisp
+	$(SBCL) $(SBCL_FLAGS) $(QL_BOOT) $(ASDF_BOOT) \
+	  --eval '(ql:quickload :mcclim-render-stack)' \
+	  --eval '(mcclim-render-stack-tests:run-phase-1-visual-test)'
+
+clean:
+	@find . -type f \( -name "*.fasl" -o -name "*.x86f" -o -name "*.fas" \) -print0 | xargs -0 -r rm -f

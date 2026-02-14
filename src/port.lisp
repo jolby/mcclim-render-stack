@@ -26,8 +26,6 @@
                     :documentation "Lock for synchronizing access to event queue.")
    (event-queue-condition :accessor port-event-queue-condition :initform nil
                          :documentation "Condition variable for blocking on empty queue.")
-   (pointer :accessor port-pointer-cache :initform nil
-            :documentation "Cached pointer object.")
    (modifier-state :accessor port-modifier-state :initform 0
                    :documentation "Current keyboard modifier state."))
   (:documentation "McCLIM port using render-stack (SDL3 + Impeller)."))
@@ -85,6 +83,9 @@
     (setf (port-event-queue port) (make-array 0 :adjustable t :fill-pointer 0))
     (setf (port-event-queue-lock port) (bt2:make-lock "event-queue-lock"))
     (setf (port-event-queue-condition port) (bt2:make-condition-variable))
+
+    ;; Create pointer object
+    (setf (port-pointer port) (make-instance 'render-stack-pointer :port port))
 
     ;; Start event processing thread
     (start-event-thread port)))
@@ -436,9 +437,3 @@
 (defmethod port-keyboard-input-focus ((port render-stack-port))
   "Return the sheet with keyboard focus."
   (port-window port))
-
-(defmethod port-pointer ((port render-stack-port))
-  "Return the port's pointer, creating it if needed."
-  (or (port-pointer-cache port)
-      (setf (port-pointer-cache port)
-            (make-instance 'render-stack-pointer :port port))))

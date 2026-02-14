@@ -9,7 +9,7 @@
   (:import-from :climi
                 #:standard-pointer
                 #:pointer-sheet
-                #:pointer-cursor)
+                #:port-modifier-state)
   (:import-from :render-stack
                 #:render-delegate
                 #:make-render-engine

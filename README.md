@@ -39,14 +39,14 @@ Provides a modern GPU-accelerated backend for McCLIM:
 
 ```
 ┌─────────────────────────────────────────┐
-│              McCLIM                      │
+│              McCLIM                     │
 │  (application frames, presentation      │
 │   types, commands, gadgets)             │
 ├─────────────────────────────────────────┤
 │        mcclim-render-stack              │
 │  (port, medium, graft, frame-manager)   │
 ├─────────────────────────────────────────┤
-│           render-stack                   │
+│           render-stack                  │
 │  (frame clock, pipeline, animation)     │
 ├───────────────────┬─────────────────────┤
 │ flutter-render-   │  render-stack-sdl3  │
@@ -56,7 +56,7 @@ Provides a modern GPU-accelerated backend for McCLIM:
 
 ## Related Projects
 
-- [McCLIM](https://github.com/McCLIM/McCLIM) - Common Lisp Interface Manager
+- [McCLIM](https://codeberg.org/McCLIM/McCLIM) - Common Lisp Interface Manager
 - [render-stack](https://github.com/jolby/render-stack) - Core rendering engine
 - [flutter-render-stack](https://github.com/jolby/flutter-render-stack) - Impeller + Flow wrappers
 - [render-stack-sdl3](https://github.com/jolby/render-stack-sdl3) - SDL3 wrappers

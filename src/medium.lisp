@@ -235,11 +235,37 @@
                                   radius-1-dx radius-1-dy
                                   radius-2-dx radius-2-dy
                                   start-angle end-angle filled)
-  ;; Draw an ellipse or arc
-  (declare (ignore center-x center-y
-                   radius-1-dx radius-1-dy
-                   radius-2-dx radius-2-dy
-                   start-angle end-angle filled)))
+  "Draw an ellipse centered at (center-x, center-y).
+
+   radius-1-dx/dy and radius-2-dx/dy define the two radius vectors.
+   For a circle: radius-1-dx = r, radius-1-dy = 0, radius-2-dx = 0, radius-2-dy = r
+   start-angle and end-angle are in radians (nil means full ellipse).
+   filled: T to fill, NIL to stroke."
+  (declare (ignore start-angle end-angle))  ; Arcs deferred to later phase
+  (let* ((paint (%get-medium-paint medium))
+         (ink (medium-ink medium))
+         (builder (%get-medium-builder medium)))
+    (when builder
+      (with-ink-on-paint (paint ink medium)
+        (if filled
+            (frs:paint-set-draw-style paint :fill)
+            (configure-paint-for-stroke paint (medium-line-style medium) medium))
+        ;; Calculate bounding rectangle from radius vectors
+        ;; For axis-aligned: radius-x = max(|r1dx|, |r2dx|), radius-y = max(|r1dy|, |r2dy|)
+        (let* ((radius-x (max (abs radius-1-dx) (abs radius-2-dx)))
+               (radius-y (max (abs radius-1-dy) (abs radius-2-dy)))
+               (left (- center-x radius-x))
+               (top (- center-y radius-y))
+               (width (* 2 radius-x))
+               (height (* 2 radius-y)))
+          ;; Use draw-oval for the ellipse (axis-aligned)
+          ;; Note: rotated ellipses would need path-based approximation
+          (frs:draw-oval builder
+                         (float left 1.0f0)
+                         (float top 1.0f0)
+                         (float width 1.0f0)
+                         (float height 1.0f0)
+                         paint))))))
 
 (defmethod medium-draw-text* ((medium render-stack-medium)
                                 string x y

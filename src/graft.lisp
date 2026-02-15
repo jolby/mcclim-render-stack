@@ -49,17 +49,36 @@
   (:documentation "Mirror representing an SDL3 window with Impeller context."))
 
 (defmethod realize-mirror ((port render-stack-port) (sheet mirrored-sheet-mixin))
-  ;; Create an SDL3 window for this sheet
-  ;; Returns a render-stack-mirror
-  (make-instance 'render-stack-mirror))
+  "Create an SDL3 window for a top-level sheet.
+   Returns a render-stack-mirror containing the window handle."
+  (clim:with-bounding-rectangle* (x y :width w :height h) sheet
+    (let* ((title (climi::sheet-pretty-name sheet))
+           (host (port-host port))
+           ;; Create window using render-stack-host
+           (window (rs-host:make-window host
+                                        :title title
+                                        :width (floor w)
+                                        :height (floor h)
+                                        :x (floor x)
+                                        :y (floor y))))
+      (make-instance 'render-stack-mirror
+                     :sdl-window window))))
 
 (defmethod destroy-mirror ((port render-stack-port) (sheet mirrored-sheet-mixin))
-  ;; Destroy the SDL3 window
-  (let ((mirror (sheet-mirror sheet)))
+  "Destroy the mirror associated with SHEET."
+  (let ((mirror (climi::sheet-direct-mirror sheet)))
     (when mirror
-      ;; Cleanup SDL3 window and Impeller context
-      )))
+      (let ((window (mirror-sdl-window mirror)))
+        (when window
+          (rs-host:destroy-window (port-host port) window)))
+      ;; Clear the mirror from the sheet
+      (setf (climi::sheet-direct-mirror sheet) nil))))
 
 (defmethod port-set-mirror-geometry ((port render-stack-port) sheet region)
-  ;; Set the mirror's geometry (position and size)
-  (declare (ignore sheet region)))
+  "Set the position and size of SHEET's mirror."
+  (let ((mirror (climi::sheet-direct-mirror sheet)))
+    (when mirror
+      (clim:with-bounding-rectangle* (x1 y1 x2 y2 :width w :height h) region
+        ;; Note: Window geometry updates would go here
+        ;; Currently stubbed - full implementation requires SDL3 window ops
+        (declare (ignore x1 y1 x2 y2 w h))))))

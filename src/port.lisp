@@ -268,12 +268,44 @@
                             :modifier-state mod-state)))))
 
       (:mouse-button-down
-       ;; TODO: Return pointer-button-press-event in bd-7eh.18
-       nil)
+       (let* ((button (rs-sdl3:mouse-button-event-button event))
+              (x (rs-sdl3:mouse-button-event-x event))
+              (y (rs-sdl3:mouse-button-event-y event))
+              (clim-button (sdl3-button-to-clim-button button))
+              (pointer (port-pointer port)))
+         (when clim-button
+           ;; Update button state
+           (update-pointer-button-state pointer clim-button t)
+           ;; Update pointer position
+           (update-pointer-position pointer x y)
+           ;; Create press event
+           (make-instance 'pointer-button-press-event
+                          :sheet (port-window port)
+                          :pointer pointer
+                          :button (sdl3-button-to-clim-constant button)
+                          :x x
+                          :y y
+                          :modifier-state 0))))
 
       (:mouse-button-up
-       ;; TODO: Return pointer-button-release-event in bd-7eh.18
-       nil)
+       (let* ((button (rs-sdl3:mouse-button-event-button event))
+              (x (rs-sdl3:mouse-button-event-x event))
+              (y (rs-sdl3:mouse-button-event-y event))
+              (clim-button (sdl3-button-to-clim-button button))
+              (pointer (port-pointer port)))
+         (when clim-button
+           ;; Update button state
+           (update-pointer-button-state pointer clim-button nil)
+           ;; Update pointer position
+           (update-pointer-position pointer x y)
+           ;; Create release event
+           (make-instance 'pointer-button-release-event
+                          :sheet (port-window port)
+                          :pointer pointer
+                          :button (sdl3-button-to-clim-constant button)
+                          :x x
+                          :y y
+                          :modifier-state 0))))
 
       (:mouse-motion
        ;; TODO: Return pointer-motion-event in bd-7eh.19

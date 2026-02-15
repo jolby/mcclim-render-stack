@@ -85,6 +85,32 @@
                         current-state)))))
 
 ;;; ============================================================================
+;;; SDL3 Button to CLIM Button Mapping
+;;; ============================================================================
+
+(defun sdl3-button-to-clim-button (sdl3-button)
+  "Convert SDL3 mouse button ID to CLIM button keyword.
+   SDL3 buttons: 1=left, 2=middle, 3=right, 4=wheel-up, 5=wheel-down"
+  (case sdl3-button
+    (1 :left)
+    (2 :middle)
+    (3 :right)
+    (4 :wheel-up)
+    (5 :wheel-down)
+    (t nil)))
+
+(defun sdl3-button-to-clim-constant (sdl3-button)
+  "Convert SDL3 mouse button ID to CLIM pointer button constant.
+   Returns the actual +pointer-*-button+ constant value."
+  (case sdl3-button
+    (1 +pointer-left-button+)
+    (2 +pointer-middle-button+)
+    (3 +pointer-right-button+)
+    (4 +pointer-wheel-up+)
+    (5 +pointer-wheel-down+)
+    (t +pointer-no-button+)))
+
+;;; ============================================================================
 ;;; SDL3 Modifier to CLIM Modifier Conversion
 ;;; ============================================================================
 

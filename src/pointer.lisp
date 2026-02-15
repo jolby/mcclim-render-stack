@@ -7,7 +7,7 @@
 ;;; ============================================================================
 
 (defclass render-stack-pointer (standard-pointer)
-  ((button-state :accessor pointer-button-state-cache :initform +pointer-no-button+
+  ((button-state :accessor pointer-button-state-cache :initform climi::+pointer-no-button+
                  :documentation "Cached button state for the pointer.")
    (last-x :accessor pointer-last-x :initform 0 :type real
            :documentation "Last known X position.")
@@ -108,7 +108,7 @@
     (3 +pointer-right-button+)
     (4 +pointer-wheel-up+)
     (5 +pointer-wheel-down+)
-    (t +pointer-no-button+)))
+    (t climi::+pointer-no-button+)))
 
 ;;; ============================================================================
 ;;; SDL3 Modifier to CLIM Modifier Conversion

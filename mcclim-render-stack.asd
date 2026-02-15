@@ -24,8 +24,9 @@
                :parachute
                :uiop)
   :components ((:module "test"
-                  :components ((:file "package")
-                               (:file "backend-tests" :depends-on ("package"))
-                               (:file "ink-conversion-tests" :depends-on ("package" "backend-tests")))))
+                   :components ((:file "package")
+                                (:file "test-utils" :depends-on ("package"))
+                                (:file "backend-tests" :depends-on ("package" "test-utils"))
+                                (:file "ink-conversion-tests" :depends-on ("package" "test-utils" "backend-tests")))))
   :perform (test-op (op c)
                     (uiop:symbol-call :parachute :test :mcclim-render-stack-tests)))

@@ -12,9 +12,10 @@
 (define-test port-creation
   :parent mcclim-render-stack-suite
   "Test basic port creation."
-  (let ((port (make-instance 'render-stack-port)))
-    (true (typep port 'render-stack-port))
-    (true (null (render-stack-port-pipeline port)))))
+  (skip-unless-sdl3
+    (let ((port (make-instance 'render-stack-port)))
+      (true (typep port 'render-stack-port))
+      (true (null (render-stack-port-pipeline port))))))
 
 (define-test medium-creation
   :parent mcclim-render-stack-suite

@@ -43,8 +43,6 @@
     #:initialize-render-stack
 
     ;; Test helpers
-    #:graft-width
-    #:graft-height
     #:make-rgba-color
     #:rgba-color))
 

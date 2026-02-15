@@ -7,15 +7,33 @@
              :documentation "List of available displays from SDL3."))
   (:documentation "McCLIM graft representing an SDL3 display."))
 
-(defun graft-width (graft)
-  "Return the width of the graft in pixels."
-  (declare (ignore graft))
-  1920)
+(defmethod graft-width ((graft render-stack-graft) &key (units :device))
+  "Return the width of the graft using render-stack-host display protocol."
+  (let* ((port (port graft))
+         (host (when port (port-host port)))
+         (display (when host (rs-host:primary-display host)))
+         (width (if display
+                    (rs-host:display-width display)
+                    1920)))
+    (ecase units
+      (:device width)
+      (:millimeters (/ width (or (and display (rs-host:display-dpi display)) 96) 25.4))
+      (:inches (/ width (or (and display (rs-host:display-dpi display)) 96)))
+      (:screen-sized 1))))
 
-(defun graft-height (graft)
-  "Return the height of the graft in pixels."
-  (declare (ignore graft))
-  1080)
+(defmethod graft-height ((graft render-stack-graft) &key (units :device))
+  "Return the height of the graft using render-stack-host display protocol."
+  (let* ((port (port graft))
+         (host (when port (port-host port)))
+         (display (when host (rs-host:primary-display host)))
+         (height (if display
+                     (rs-host:display-height display)
+                     1080)))
+    (ecase units
+      (:device height)
+      (:millimeters (/ height (or (and display (rs-host:display-dpi display)) 96) 25.4))
+      (:inches (/ height (or (and display (rs-host:display-dpi display)) 96)))
+      (:screen-sized 1))))
 
 (defmethod graft-orientation ((graft render-stack-graft))
   ;; Return the orientation of the display

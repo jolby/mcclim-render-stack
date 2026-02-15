@@ -229,11 +229,52 @@
                       :sheet (port-window port)))
 
       (:window-resized
-       ;; Window was resized - update surface
+       ;; Window was resized - update surface and create configuration event
        (when (port-delegate port)
          (update-delegate-surface (port-delegate port)))
-       ;; TODO: Create window-configuration-event with new size
+       ;; Get new size from window
+       (let* ((window (port-window port))
+              (width (rs-host:window-width window))
+              (height (rs-host:window-height window)))
+         (make-instance 'window-configuration-event
+                        :sheet window
+                        :x 0 :y 0
+                        :width width
+                        :height height)))
+
+      (:window-exposed
+       ;; Window needs repaint
+       (make-instance 'window-repaint-event
+                      :sheet (port-window port)
+                      :region clim:+everywhere+))
+
+      (:window-focus-gained
+       (make-instance 'window-manager-focus-event
+                      :sheet (port-window port)))
+
+      (:window-focus-lost
+       ;; Focus lost - no specific event class, but we could track it if needed
        nil)
+
+      (:window-shown
+       (make-instance 'window-map-event
+                      :sheet (port-window port)))
+
+      (:window-hidden
+       (make-instance 'window-unmap-event
+                      :sheet (port-window port)))
+
+      (:window-mouse-enter
+       (let ((pointer (port-pointer port)))
+         (make-instance 'pointer-enter-event
+                        :sheet (port-window port)
+                        :pointer pointer)))
+
+      (:window-mouse-leave
+       (let ((pointer (port-pointer port)))
+         (make-instance 'pointer-exit-event
+                        :sheet (port-window port)
+                        :pointer pointer)))
 
       (:key-down
          (let ((keycode (rs-sdl3:keyboard-event-keycode event))

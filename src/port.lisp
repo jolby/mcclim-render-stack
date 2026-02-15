@@ -308,12 +308,32 @@
                           :modifier-state 0))))
 
       (:mouse-motion
-       ;; TODO: Return pointer-motion-event in bd-7eh.19
-       nil)
+       (let* ((x (rs-sdl3:mouse-motion-event-x event))
+              (y (rs-sdl3:mouse-motion-event-y event))
+              (pointer (port-pointer port)))
+         ;; Update pointer position
+         (update-pointer-position pointer x y)
+         ;; Create motion event
+         (make-instance 'pointer-motion-event
+                        :sheet (port-window port)
+                        :pointer pointer
+                        :x x
+                        :y y
+                        :modifier-state 0)))
 
       (:mouse-wheel
-       ;; TODO: Return pointer-scroll-event in bd-7eh.19
-       nil)
+       (let* ((x (rs-sdl3:mouse-wheel-event-x event))
+              (y (rs-sdl3:mouse-wheel-event-y event))
+              ;; Determine scroll direction from delta values
+              (delta-x x)  ; x is horizontal scroll amount
+              (delta-y y)  ; y is vertical scroll amount
+              (pointer (port-pointer port)))
+         ;; Create scroll event
+         (make-instance 'pointer-scroll-event
+                        :sheet (port-window port)
+                        :pointer pointer
+                        :delta-x delta-x
+                        :delta-y delta-y)))
 
       ;; Ignore unhandled events for now
       (t nil))))

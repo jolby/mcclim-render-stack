@@ -98,6 +98,25 @@
     (true (plusp (logand (mcclim-render-stack::pointer-button-state pointer)
                          clim:+pointer-right-button+)))))
 
+(define-test pointer-position-tracking
+  :parent mcclim-render-stack-suite
+  "Test pointer position tracking."
+  (let ((pointer (make-instance 'mcclim-render-stack::render-stack-pointer)))
+    ;; Initial position should be 0,0
+    (multiple-value-bind (x y) (mcclim-render-stack::pointer-position pointer)
+      (is = 0 x)
+      (is = 0 y))
+    ;; Update position
+    (mcclim-render-stack::update-pointer-position pointer 100 200)
+    (multiple-value-bind (x y) (mcclim-render-stack::pointer-position pointer)
+      (is = 100 x)
+      (is = 200 y))
+    ;; Update again
+    (mcclim-render-stack::update-pointer-position pointer 300 400)
+    (multiple-value-bind (x y) (mcclim-render-stack::pointer-position pointer)
+      (is = 300 x)
+      (is = 400 y))))
+
 ;;; Phase 1 Integration Test
 
 (defun run-phase-1-visual-test ()

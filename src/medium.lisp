@@ -6,8 +6,59 @@
   ((paint :accessor medium-paint :initform nil
           :documentation "Persistent Impeller paint object for this medium.")
    (surface :accessor medium-surface :initform nil
-            :documentation "The Impeller rendering surface."))
+             :documentation "The Impeller rendering surface."))
   (:documentation "McCLIM medium using Impeller for drawing."))
+
+(defmethod clim:make-medium ((port render-stack-port) sheet)
+  "Create a render-stack-medium for the given port and sheet."
+  (make-instance 'render-stack-medium :port port :sheet sheet))
+
+;;; Text methods - stubs for now
+
+(defmethod clim-backend:text-bounding-rectangle*
+    ((medium render-stack-medium) string &key text-style (start 0) end)
+  "Return bounding rectangle for text. Stub implementation."
+  (multiple-value-bind (width height x y baseline)
+      (clim:text-size medium string :text-style text-style :start start :end end)
+    (declare (ignore baseline))
+    (values x y (+ x width) (+ y height) width 0)))
+
+(defmethod clim:text-size ((medium render-stack-medium) string 
+                           &key text-style (start 0) end)
+  "Return text size metrics. Stub implementation."
+  (let* ((font-size (or (clim:text-style-size text-style) 12))
+         (len (length string))
+         (width (* len font-size 0.6))
+         (height font-size))
+    (values width height 0 height height)))
+
+(defmethod clim:text-style-ascent ((text-style clim:text-style) (medium render-stack-medium))
+  "Return text ascent. Stub implementation."
+  (or (clim:text-style-size text-style) 12))
+
+(defmethod clim:text-style-descent ((text-style clim:text-style) (medium render-stack-medium))
+  "Return text descent. Stub implementation."
+  (* (or (clim:text-style-size text-style) 12) 0.2))
+
+(defmethod clim:text-style-height ((text-style clim:text-style) (medium render-stack-medium))
+  "Return text height. Stub implementation."
+  (or (clim:text-style-size text-style) 12))
+
+(defmethod clim:text-style-width ((text-style clim:text-style) (medium render-stack-medium))
+  "Return text width. Stub implementation."
+  (or (clim:text-style-size text-style) 12))
+
+(defmethod clim:text-style-descent ((text-style clim:text-style) (medium render-stack-medium))
+  "Return text descent. Stub implementation."
+  (* (or (clim:text-style-size text-style) 12) 0.2))
+
+(defmethod clim:text-style-height ((text-style clim:text-style) (medium render-stack-medium))
+  "Return text height. Stub implementation."
+  (or (clim:text-style-size text-style) 12))
+
+(defmethod clim:text-style-width ((text-style clim:text-style) (medium render-stack-medium))
+  "Return text width. Stub implementation."
+  (or (clim:text-style-size text-style) 12))
 
 ;;; Helper functions for medium drawing
 
@@ -375,8 +426,8 @@
                                       (:huge 32.0f0)
                                       (t (float (or size 14) 1.0f0))))
                        (weight (if (and (listp face) (member :bold face))
-                                   :bold
-                                   :normal))
+                                   :weight700
+                                   :weight400))
                        (slant (if (and (listp face) (member :italic face))
                                   :italic
                                   :normal)))
@@ -496,8 +547,8 @@
                                   (:huge 32.0f0)
                                   (t (float (or size 14) 1.0f0))))
                    (weight (if (and (listp face) (member :bold face))
-                               :bold
-                               :normal)))
+                               :weight700
+                               :weight400)))
                (frs:paragraph-style-set-font-family style mapped-family)
                (frs:paragraph-style-set-font-size style mapped-size)
                (frs:paragraph-style-set-font-weight style weight)
@@ -573,8 +624,8 @@
                                   (:huge 32.0f0)
                                   (t (float (or size 14) 1.0f0))))
                    (weight (if (and (listp face) (member :bold face))
-                               :bold
-                               :normal)))
+                               :weight700
+                               :weight400)))
                (frs:paragraph-style-set-font-family style mapped-family)
                (frs:paragraph-style-set-font-size style mapped-size)
                (frs:paragraph-style-set-font-weight style weight)

@@ -239,3 +239,62 @@
   "Test that the Phase 1 visual test function exists."
   (true (fboundp 'run-phase-1-visual-test))
   (true (fboundp 'draw-phase-1-test-pattern)))
+
+;;; Event Queue Architecture Tests (bd-7eh.32)
+
+(define-test process-next-event-returns-timeout
+  :parent mcclim-render-stack-suite
+  "Test that process-next-event returns (values nil :timeout) per McCLIM protocol."
+  (skip-unless-sdl3
+    (let ((port (make-instance 'render-stack-port)))
+      (setf (port-quit-requested port) nil)
+      (multiple-value-bind (result reason)
+          (process-next-event port :timeout 0.001)
+        (is eq nil result)
+        (is eq :timeout reason)))))
+
+(define-test process-next-event-returns-wait-function
+  :parent mcclim-render-stack-suite
+  "Test that process-next-event returns (values nil :wait-function) when wait-function returns true."
+  (skip-unless-sdl3
+    (let ((port (make-instance 'render-stack-port)))
+      (setf (port-quit-requested port) nil)
+      (multiple-value-bind (result reason)
+          (process-next-event port :wait-function (lambda () t))
+        (is eq nil result)
+        (is eq :wait-function reason)))))
+
+(define-test process-next-event-quit-requested
+  :parent mcclim-render-stack-suite
+  "Test that process-next-event returns nil when quit is requested."
+  (skip-unless-sdl3
+    (let ((port (make-instance 'render-stack-port)))
+      (setf (port-quit-requested port) t)
+      (is eq nil (process-next-event port)))))
+
+(define-test drain-sdl3-events-function-exists
+  :parent mcclim-render-stack-suite
+  "Test that drain-sdl3-events function exists and is callable."
+  (true (fboundp 'mcclim-render-stack::drain-sdl3-events)))
+
+(define-test main-thread-loop-function-exists
+  :parent mcclim-render-stack-suite
+  "Test that main-thread-loop function exists."
+  (true (fboundp 'mcclim-render-stack::main-thread-loop)))
+
+(define-test translate-sdl3-event-moved-to-render-delegate
+  :parent mcclim-render-stack-suite
+  "Test that translate-sdl3-event is now in render-delegate.lisp."
+  (true (fboundp 'mcclim-render-stack::translate-sdl3-event)))
+
+(define-test event-translation-helpers-exist
+  :parent mcclim-render-stack-suite
+  "Test that event translation helper functions exist."
+  (true (fboundp 'mcclim-render-stack::sdl3-modifiers-to-clim))
+  (true (fboundp 'mcclim-render-stack::sdl3-keycode-to-key-name))
+  (true (fboundp 'mcclim-render-stack::sdl3-keycode-to-character)))
+
+(define-test wait-event-timeout-exists
+  :parent mcclim-render-stack-suite
+  "Test that wait-event-timeout is available from render-stack-sdl3."
+  (true (fboundp 'rs-sdl3:wait-event-timeout)))

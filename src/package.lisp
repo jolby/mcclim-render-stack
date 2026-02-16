@@ -15,6 +15,8 @@
                 #:make-render-engine
                 #:render-engine-start
                 #:render-engine-stop
+                #:render-engine-pipeline
+                #:pipeline-try-consume
                 #:render-delegate-begin-frame
                 #:render-delegate-end-frame
                 #:render-delegate-notify-idle

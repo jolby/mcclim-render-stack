@@ -27,35 +27,39 @@
    (event-queue-condition :accessor port-event-queue-condition :initform nil
                          :documentation "Condition variable for blocking on empty queue.")
    (modifier-state :accessor port-modifier-state :initform 0
-                   :documentation "Current keyboard modifier state."))
+                   :documentation "Current keyboard modifier state.")
+   (window-table :accessor port-window-table
+                 :initform (make-hash-table :test 'eq)
+                 :documentation "SDL3 window → CLIM sheet mapping for event dispatch."))
   (:documentation "McCLIM port using render-stack (SDL3 + Impeller)."))
 
 ;;; ============================================================================
 ;;; Port Initialization
 ;;; ============================================================================
 
+(defun %init-port-on-main-thread (port)
+  "Initialize SDL3 and create the host on the main thread.
+   Window, delegate, and engine are created later in realize-mirror."
+  ;; Initialize SDL3 video
+  (rs-sdl3:init-sdl3-video)
+  ;; Create host (no window yet — deferred to realize-mirror)
+  (setf (port-host port) (make-instance 'rs-sdl3:sdl3-host)))
+
 (defmethod initialize-instance :after ((port render-stack-port) &key)
-  "Initialize SDL3 and create the render-stack engine."
-   ;; Initialize SDL3 video subsystem
-   (rs-internals:register-main-thread)
-   (rs-internals:ensure-tmt-runner-ready)
-   (trivial-main-thread:call-in-main-thread
-    (lambda ()
-      (rs-sdl3:init-sdl3-video)))
+  "Initialize SDL3 and create the host. Window/engine deferred to realize-mirror."
+  ;; Initialize SDL3 video subsystem
+  (rs-internals:register-main-thread)
+  (rs-internals:ensure-tmt-runner-ready)
+  (trivial-main-thread:call-in-main-thread
+   (lambda () (%init-port-on-main-thread port)))
 
-    ;; Start the engine
-    (render-engine-start (port-engine port))
+  ;; Create typography context for text rendering
+  (setf (port-typography-context port) (frs:make-typography-context))
 
-    ;; Create typography context for text rendering
-    (setf (port-typography-context port) (frs:make-typography-context))
-
-    ;; Initialize event queue
-    (setf (port-event-queue port) (make-array 0 :adjustable t :fill-pointer 0))
-    (setf (port-event-queue-lock port) (bt2:make-lock "event-queue-lock"))
-    (setf (port-event-queue-condition port) (bt2:make-condition-variable))
-
-    ;; Start event processing thread
-    (start-event-thread port))
+  ;; Initialize event queue
+  (setf (port-event-queue port) (make-array 0 :adjustable t :fill-pointer 0))
+  (setf (port-event-queue-lock port) (bt2:make-lock "event-queue-lock"))
+  (setf (port-event-queue-condition port) (bt2:make-condition-variable)))
 
 ;;; ============================================================================
 ;;; Event Queue Operations
@@ -216,28 +220,32 @@
 (defun translate-sdl3-event (port event)
   "Translate a single SDL3 event to a CLIM event.
    Returns a CLIM event object, or NIL if the event should be ignored."
-  (let ((event-type (rs-sdl3:get-event-type event)))
+  (let* ((event-type (rs-sdl3:get-event-type event))
+         (window (port-window port))
+         (sheet (when window (port-find-sheet-for-window port window))))
+    ;; Drop events if no CLIM sheet is registered yet
+    (unless sheet
+      (return-from translate-sdl3-event nil))
     (case event-type
       (:quit
        (setf (port-quit-requested port) t)
        (make-instance 'window-destroy-event
-                      :sheet (port-window port)))
+                      :sheet sheet))
 
       (:window-close-requested
        (setf (port-quit-requested port) t)
        (make-instance 'window-manager-delete-event
-                      :sheet (port-window port)))
+                      :sheet sheet))
 
       (:window-resized
        ;; Window was resized - update surface and create configuration event
        (when (port-delegate port)
          (update-delegate-surface (port-delegate port)))
        ;; Get new size from window
-       (let* ((window (port-window port))
-              (width (rs-host:window-width window))
-              (height (rs-host:window-height window)))
+       (let ((width (rs-host:window-width window))
+             (height (rs-host:window-height window)))
          (make-instance 'window-configuration-event
-                        :sheet window
+                        :sheet sheet
                         :x 0 :y 0
                         :width width
                         :height height)))
@@ -245,63 +253,62 @@
       (:window-exposed
        ;; Window needs repaint
        (make-instance 'window-repaint-event
-                      :sheet (port-window port)
+                      :sheet sheet
                       :region clim:+everywhere+))
 
       (:window-focus-gained
        (make-instance 'window-manager-focus-event
-                      :sheet (port-window port)))
+                      :sheet sheet))
 
       (:window-focus-lost
-       ;; Focus lost - no specific event class, but we could track it if needed
        nil)
 
       (:window-shown
        (make-instance 'window-map-event
-                      :sheet (port-window port)))
+                      :sheet sheet))
 
       (:window-hidden
        (make-instance 'window-unmap-event
-                      :sheet (port-window port)))
+                      :sheet sheet))
 
       (:window-mouse-enter
        (let ((pointer (port-pointer port)))
          (make-instance 'pointer-enter-event
-                        :sheet (port-window port)
+                        :sheet sheet
                         :pointer pointer)))
 
       (:window-mouse-leave
        (let ((pointer (port-pointer port)))
          (make-instance 'pointer-exit-event
-                        :sheet (port-window port)
+                        :sheet sheet
                         :pointer pointer)))
 
       (:key-down
-         (let ((keycode (rs-sdl3:keyboard-event-keycode event))
-               (modifiers (rs-sdl3:keyboard-event-mod event)))
-           ;; Handle escape as quit
-           (when (= keycode %sdl3:+k-escape+)
-             (setf (port-quit-requested port) t))
-           ;; Create key press event
-           (let ((key-name (sdl3-keycode-to-key-name keycode))
-                 (mod-state (sdl3-modifiers-to-clim modifiers)))
-             (when key-name
-               (make-instance 'key-press-event
-                             :sheet (port-window port)
-                             :key-name key-name
-                             :key-character (sdl3-keycode-to-character keycode mod-state)
-                             :x 0
-                             :y 0
-                             :modifier-state mod-state)))))
+       (let ((keycode (rs-sdl3:keyboard-event-keycode event))
+             (modifiers (rs-sdl3:keyboard-event-mod event)))
+         ;; Handle escape as quit
+         (when (= keycode %sdl3:+k-escape+)
+           (setf (port-quit-requested port) t))
+         ;; Create key press event
+         (let ((key-name (sdl3-keycode-to-key-name keycode))
+               (mod-state (sdl3-modifiers-to-clim modifiers)))
+           (when key-name
+             (make-instance 'key-press-event
+                            :sheet sheet
+                            :key-name key-name
+                            :key-character (sdl3-keycode-to-character keycode mod-state)
+                            :x 0
+                            :y 0
+                            :modifier-state mod-state)))))
 
       (:key-up
-        (let ((keycode (rs-sdl3:keyboard-event-keycode event))
-              (modifiers (rs-sdl3:keyboard-event-mod event)))
-          (let ((key-name (sdl3-keycode-to-key-name keycode))
-                (mod-state (sdl3-modifiers-to-clim modifiers)))
-            (when key-name
-              (make-instance 'key-release-event
-                            :sheet (port-window port)
+       (let ((keycode (rs-sdl3:keyboard-event-keycode event))
+             (modifiers (rs-sdl3:keyboard-event-mod event)))
+         (let ((key-name (sdl3-keycode-to-key-name keycode))
+               (mod-state (sdl3-modifiers-to-clim modifiers)))
+           (when key-name
+             (make-instance 'key-release-event
+                            :sheet sheet
                             :key-name key-name
                             :key-character (sdl3-keycode-to-character keycode mod-state)
                             :x 0
@@ -315,13 +322,10 @@
               (clim-button (sdl3-button-to-clim-button button))
               (pointer (port-pointer port)))
          (when clim-button
-           ;; Update button state
            (update-pointer-button-state pointer clim-button t)
-           ;; Update pointer position
            (update-pointer-position pointer x y)
-           ;; Create press event
            (make-instance 'pointer-button-press-event
-                          :sheet (port-window port)
+                          :sheet sheet
                           :pointer pointer
                           :button (sdl3-button-to-clim-constant button)
                           :x x
@@ -335,13 +339,10 @@
               (clim-button (sdl3-button-to-clim-button button))
               (pointer (port-pointer port)))
          (when clim-button
-           ;; Update button state
            (update-pointer-button-state pointer clim-button nil)
-           ;; Update pointer position
            (update-pointer-position pointer x y)
-           ;; Create release event
            (make-instance 'pointer-button-release-event
-                          :sheet (port-window port)
+                          :sheet sheet
                           :pointer pointer
                           :button (sdl3-button-to-clim-constant button)
                           :x x
@@ -352,11 +353,9 @@
        (let* ((x (rs-sdl3:mouse-motion-event-x event))
               (y (rs-sdl3:mouse-motion-event-y event))
               (pointer (port-pointer port)))
-         ;; Update pointer position
          (update-pointer-position pointer x y)
-         ;; Create motion event
          (make-instance 'pointer-motion-event
-                        :sheet (port-window port)
+                        :sheet sheet
                         :pointer pointer
                         :x x
                         :y y
@@ -365,18 +364,16 @@
       (:mouse-wheel
        (let* ((x (rs-sdl3:mouse-wheel-event-x event))
               (y (rs-sdl3:mouse-wheel-event-y event))
-              ;; Determine scroll direction from delta values
-              (delta-x x)  ; x is horizontal scroll amount
-              (delta-y y)  ; y is vertical scroll amount
+              (delta-x x)
+              (delta-y y)
               (pointer (port-pointer port)))
-         ;; Create scroll event
          (make-instance 'pointer-scroll-event
-                        :sheet (port-window port)
+                        :sheet sheet
                         :pointer pointer
                         :delta-x delta-x
                         :delta-y delta-y)))
 
-      ;; Ignore unhandled events for now
+      ;; Ignore unhandled events
       (t nil))))
 
 ;;; ============================================================================
@@ -478,12 +475,23 @@
 ;;; Port Capabilities
 ;;; ============================================================================
 
+(defun port-find-sheet-for-window (port window)
+  "Look up the CLIM sheet associated with an SDL3 window."
+  (gethash window (port-window-table port)))
+
 (defmethod port-keyboard-input-focus ((port render-stack-port))
   "Return the sheet with keyboard focus."
-  (port-window port))
+  (let ((window (port-window port)))
+    (when window
+      (port-find-sheet-for-window port window))))
 
 (defmethod port-pointer :before ((port render-stack-port))
   "Ensure the pointer is created when accessed."
   (unless (slot-value port 'pointer)
     (setf (slot-value port 'pointer)
           (make-instance 'render-stack-pointer :port port))))
+
+;;; Main thread loop function (stub for test compatibility)
+(defun main-thread-loop (port)
+  "Main thread event+render loop stub."
+  (declare (ignore port)))

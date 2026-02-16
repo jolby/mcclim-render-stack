@@ -30,3 +30,8 @@
                                 (:file "ink-conversion-tests" :depends-on ("package" "test-utils" "backend-tests")))))
   :perform (test-op (op c)
                     (uiop:symbol-call :parachute :test :mcclim-render-stack-tests)))
+
+(asdf:defsystem :mcclim-render-stack-examples
+  :depends-on (:mcclim-render-stack)
+  :components ((:module "examples"
+                  :components ((:file "hello-world")))))

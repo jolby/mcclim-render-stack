@@ -8,7 +8,7 @@ SBCL_FLAGS := --dynamic-space-size 8096 --noinform --disable-debugger --non-inte
 ASDF_BOOT := --eval '(require :asdf)' --eval "(pushnew \#p\"$(CWD)/\" asdf:*central-registry*)"
 QL_BOOT := --eval '(load "$(QL)")'
 
-.PHONY: all load test test-unit test-integration test-ink test-line-style test-event clean check-quicklisp
+.PHONY: all load test test-unit test-integration test-ink test-line-style test-event clean check-quicklisp demo
 
 all: load
 
@@ -52,3 +52,9 @@ test-integration: check-quicklisp
 
 clean:
 	@find . -type f \( -name "*.fasl" -o -name "*.x86f" -o -name "*.fas" \) -print0 | xargs -0 -r rm -f
+
+demo: check-quicklisp
+	$(SBCL) $(SBCL_FLAGS) $(QL_BOOT) $(ASDF_BOOT) \
+	  --eval '(ql:quickload :mcclim-render-stack :silent t)' \
+	  --eval '(load "$(CWD)/examples/hello-world.lisp")' \
+	  --eval '(clim-user::hello-world-run)'

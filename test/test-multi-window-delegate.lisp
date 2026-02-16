@@ -5,22 +5,6 @@
 (in-package :mcclim-render-stack-tests)
 
 ;;; ============================================================================
-;;; Test Suites
-;;; ============================================================================
-
-(define-test multi-window-delegate-suite
-  "Test suite for multi-window render delegate implementation."
-  :parent mcclim-render-stack-suite)
-
-(define-test window-registration-suite
-  "Tests for window registration protocol."
-  :parent multi-window-delegate-suite)
-
-(define-test protocol-methods-suite
-  "Tests for render-delegate protocol methods."
-  :parent multi-window-delegate-suite)
-
-;;; ============================================================================
 ;;; Task 1.2 Tests: Delegate Class
 ;;; ============================================================================
 
@@ -144,3 +128,8 @@
         (true result)
         ;; Dirty list should be cleared
         (true (null (mcclim-render-stack::delegate-dirty-ports delegate)))))))
+#+(or)
+(progn
+  (test 'multi-window-delegate-suite :report 'interactive)
+
+  )

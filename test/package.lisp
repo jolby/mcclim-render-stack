@@ -16,7 +16,3 @@
                 #:text-style-components
                 #:medium-text-style))
 
-(in-package :mcclim-render-stack-tests)
-
-(define-test mcclim-render-stack-suite
-  "Top-level test suite for mcclim-render-stack backend.")

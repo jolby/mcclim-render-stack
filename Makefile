@@ -27,6 +27,7 @@ test: test-unit
 
 test-unit: check-quicklisp
 	$(SBCL) $(SBCL_FLAGS) $(QL_BOOT) $(ASDF_BOOT) \
+	  --eval '(ql:quickload :mcclim-render-stack :force t :silent t)' \
 	  --eval '(ql:quickload :mcclim-render-stack/tests :force t :silent t)' \
 	  --eval '(asdf:test-system "mcclim-render-stack")'
 
@@ -35,6 +36,7 @@ clean:
 
 demo: check-quicklisp
 	$(SBCL) $(SBCL_FLAGS) $(QL_BOOT) $(ASDF_BOOT) \
-	  --eval '(ql:quickload :mcclim-render-stack :silent t)' \
+	  --eval '(ql:quickload :mcclim-render-stack :force t :silent t)' \
+	  --eval '(ql:quickload :mcclim-render-stack/examples :force t :silent t)' \
 	  --eval '(load "$(CWD)/examples/hello-world.lisp")' \
 	  --eval '(clim-user::hello-world-run)'

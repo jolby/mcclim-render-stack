@@ -19,7 +19,6 @@
                               (:file "medium" :depends-on ("port"))
                               (:file "graft" :depends-on ("port"))
                               (:file "frame-manager" :depends-on ("graft"))
-                              ;; Removed: render-delegate.lisp (functionality merged into multi-window-delegate)
                               )))
   :in-order-to ((asdf:test-op (asdf:test-op "mcclim-render-stack/tests"))))
 
@@ -29,11 +28,11 @@
                :uiop)
   :components ((:module "test"
                     :components ((:file "package")
-                                 (:file "test-utils" :depends-on ("package"))
-                                 (:file "backend-tests" :depends-on ("package" "test-utils"))
-                                 (:file "ink-conversion-tests" :depends-on ("package" "test-utils" "backend-tests"))
-                                 ;; Phase 1 TDD tests (see TDD-PLAN.md)
-                                 (:file "test-multi-window-delegate" :depends-on ("package" "test-utils"))
+                                 (:file "suites" :depends-on ("package"))
+                                 (:file "test-utils" :depends-on ("package" "suites"))
+                                 (:file "backend-tests" :depends-on ("package" "suites" "test-utils"))
+                                 (:file "ink-conversion-tests" :depends-on ("package" "suites" "test-utils" "backend-tests"))
+                                 (:file "test-multi-window-delegate" :depends-on ("package" "suites" "test-utils"))
                                  ;; bd-3hi.9: test-global-engine.lisp
                                  ;; bd-3hi.9: test-port-refactor.lisp  
                                  ;; bd-3hi.10: test-integration.lisp
@@ -41,7 +40,7 @@
   :perform (asdf:test-op (op c)
                      (uiop:symbol-call :parachute :test :mcclim-render-stack-tests)))
 
-(asdf:defsystem :mcclim-render-stack-examples
+(asdf:defsystem :mcclim-render-stack/examples
   :depends-on (:mcclim-render-stack)
   :components ((:module "examples"
                   :components ((:file "hello-world")))))

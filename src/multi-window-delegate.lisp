@@ -166,10 +166,10 @@ The delegate implements the render-stack RENDER-DELEGATE protocol:
   "Called after frame building completes on UI thread.
    
    Thread Contract: MUST be called on UI thread."
+  (declare (ignore layer-tree frame-timings))
   (rs-internals:assert-ui-thread render-delegate-end-frame)
   ;; Phase 1: Nothing to do
   ;; Phase 2: Cleanup, log timing data
-  (declare (ignore layer-tree frame-timings))
   nil)
 
 (defmethod render-stack:render-delegate-notify-idle
@@ -177,9 +177,9 @@ The delegate implements the render-stack RENDER-DELEGATE protocol:
   "Called when engine is idle on UI thread.
    
    Thread Contract: MUST be called on UI thread."
+  (declare (ignore deadline))
   (rs-internals:assert-ui-thread render-delegate-notify-idle)
   ;; Can do deferred work here, but must complete before deadline
-  (declare (ignore deadline))
   nil)
 
 (defmethod render-stack:render-delegate-draw
@@ -206,6 +206,29 @@ The delegate implements the render-stack RENDER-DELEGATE protocol:
   ;; Swap buffers for all windows
   (swap-all-window-buffers delegate))
 
+(defun get-window-id-from-sdl3-event (event-ptr event-type)
+  "Extract window ID from SDL3 event based on event type.
+   
+   Different event types store window ID in different struct fields,
+   so we need to dispatch to the appropriate accessor."
+  (case event-type
+    ((:key-down :key-up)
+     (rs-sdl3:keyboard-event-window-id event-ptr))
+    ((:mouse-button-down :mouse-button-up)
+     (rs-sdl3:mouse-button-event-window-id event-ptr))
+    ((:mouse-motion)
+     (rs-sdl3:mouse-motion-event-window-id event-ptr))
+    ((:mouse-wheel)
+     (rs-sdl3:mouse-wheel-event-window-id event-ptr))
+    ;; Window events all use the same accessor
+    ((:window-close-requested :window-resized :window-exposed 
+      :window-focus-gained :window-focus-lost :window-shown 
+      :window-hidden :window-moved :window-mouse-enter 
+      :window-mouse-leave :window-pixel-size-changed)
+     (rs-sdl3:window-event-window-id event-ptr))
+    ;; Default: return nil for events without window ID
+    (t nil)))
+
 (defun drain-sdl3-events (delegate)
   "Poll SDL3 events and route to appropriate port.
    Calls distribute-event which puts events into McCLIM's per-sheet concurrent-queue.
@@ -215,8 +238,9 @@ The delegate implements the render-stack RENDER-DELEGATE protocol:
   
   (rs-sdl3:with-sdl3-event (ev)
     (loop while (rs-sdl3:poll-event ev)
-          do (let* ((window-id (rs-sdl3:get-window-id-from-event ev))
-                    (port (find-port-for-window delegate window-id))
+          do (let* ((event-type (rs-sdl3:get-event-type ev))
+                    (window-id (get-window-id-from-sdl3-event ev event-type))
+                    (port (when window-id (find-port-for-window delegate window-id)))
                     (clim-event (when port (translate-sdl3-event port ev))))
                (when (and port clim-event)
                  ;; This routes to McCLIM's concurrent-queue via condition-notify wakeup

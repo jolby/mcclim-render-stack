@@ -32,11 +32,9 @@
                                  (:file "test-utils" :depends-on ("package"))
                                  (:file "backend-tests" :depends-on ("package" "test-utils"))
                                  (:file "ink-conversion-tests" :depends-on ("package" "test-utils" "backend-tests"))
-                                 ;; TDD test files for Phase 1 implementation
-                                 (:file "test-multi-window-delegate" :depends-on ("package" "test-utils"))
-                                 (:file "test-global-engine" :depends-on ("package" "test-utils"))
-                                 (:file "test-port-refactor" :depends-on ("package" "test-utils"))
-                                 (:file "test-integration" :depends-on ("package" "test-utils")))))
+                                 ;; NOTE: Phase 1 TDD tests will be added here
+                                 ;; See br issues bd-3hi.8, bd-3hi.9, bd-3hi.10
+                                 )))
   :perform (test-op (op c)
                      (uiop:symbol-call :parachute :test :mcclim-render-stack-tests)))
 

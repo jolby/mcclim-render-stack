@@ -254,7 +254,7 @@ Event Flow:
            ;; Get SDL3 window ID for event routing
            (window-id (trivial-main-thread:call-in-main-thread
                        (lambda ()
-                         (rs-sdl3:get-window-id 
+                         (%sdl3:get-window-id 
                           (rs-sdl3::sdl3-window-handle window))))))
       
       ;; Store on port

@@ -21,7 +21,7 @@
                               (:file "frame-manager" :depends-on ("graft"))
                               ;; Removed: render-delegate.lisp (functionality merged into multi-window-delegate)
                               )))
-  :in-order-to ((test-op (test-op "mcclim-render-stack/tests"))))
+  :in-order-to ((asdf:test-op (asdf:test-op "mcclim-render-stack/tests"))))
 
 (asdf:defsystem :mcclim-render-stack/tests
   :depends-on (:mcclim-render-stack
@@ -38,7 +38,7 @@
                                  ;; bd-3hi.9: test-port-refactor.lisp  
                                  ;; bd-3hi.10: test-integration.lisp
                                  )))
-  :perform (test-op (op c)
+  :perform (asdf:test-op (op c)
                      (uiop:symbol-call :parachute :test :mcclim-render-stack-tests)))
 
 (asdf:defsystem :mcclim-render-stack-examples

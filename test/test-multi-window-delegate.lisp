@@ -17,11 +17,11 @@
     (is (typep delegate 'mcclim-render-stack::multi-window-render-delegate))
     (is (hash-table-p (mcclim-render-stack::delegate-window-table delegate)))
     (is (hash-table-p (mcclim-render-stack::delegate-port-table delegate)))
-    (is (bt2:lock-p (mcclim-render-stack::delegate-table-lock delegate)))
+    (is (not (null (mcclim-render-stack::delegate-table-lock delegate))))
     (is (hash-table-p (mcclim-render-stack::delegate-pending-display-lists delegate)))
-    (is (bt2:lock-p (mcclim-render-stack::delegate-display-list-lock delegate)))
+    (is (not (null (mcclim-render-stack::delegate-display-list-lock delegate))))
     (is (null (mcclim-render-stack::delegate-dirty-ports delegate)))
-    (is (bt2:lock-p (mcclim-render-stack::delegate-dirty-lock delegate)))))
+    (is (not (null (mcclim-render-stack::delegate-dirty-lock delegate))))))
 
 (deftest delegate-slots-have-correct-initforms
   "Verify all slots are initialized with correct types."

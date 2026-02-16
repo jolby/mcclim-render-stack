@@ -24,12 +24,17 @@
                :parachute
                :uiop)
   :components ((:module "test"
-                   :components ((:file "package")
-                                (:file "test-utils" :depends-on ("package"))
-                                (:file "backend-tests" :depends-on ("package" "test-utils"))
-                                (:file "ink-conversion-tests" :depends-on ("package" "test-utils" "backend-tests")))))
+                    :components ((:file "package")
+                                 (:file "test-utils" :depends-on ("package"))
+                                 (:file "backend-tests" :depends-on ("package" "test-utils"))
+                                 (:file "ink-conversion-tests" :depends-on ("package" "test-utils" "backend-tests"))
+                                 ;; TDD test files for Phase 1 implementation
+                                 (:file "test-multi-window-delegate" :depends-on ("package" "test-utils"))
+                                 (:file "test-global-engine" :depends-on ("package" "test-utils"))
+                                 (:file "test-port-refactor" :depends-on ("package" "test-utils"))
+                                 (:file "test-integration" :depends-on ("package" "test-utils")))))
   :perform (test-op (op c)
-                    (uiop:symbol-call :parachute :test :mcclim-render-stack-tests)))
+                     (uiop:symbol-call :parachute :test :mcclim-render-stack-tests)))
 
 (asdf:defsystem :mcclim-render-stack-examples
   :depends-on (:mcclim-render-stack)

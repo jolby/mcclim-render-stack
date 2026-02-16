@@ -8,15 +8,19 @@
                :render-stack-sdl3
                :flutter-render-stack
                :alexandria
-               :log4cl)
+               :log4cl
+               :bordeaux-threads)
   :components ((:module "src"
                  :components ((:file "package")
+                              (:file "multi-window-delegate" :depends-on ("package"))
+                              (:file "globals" :depends-on ("package" "multi-window-delegate"))
                               (:file "pointer" :depends-on ("package"))
-                              (:file "port" :depends-on ("package" "pointer"))
+                              (:file "port" :depends-on ("package" "pointer" "multi-window-delegate" "globals"))
                               (:file "medium" :depends-on ("port"))
                               (:file "graft" :depends-on ("port"))
                               (:file "frame-manager" :depends-on ("graft"))
-                              (:file "render-delegate" :depends-on ("port")))))
+                              ;; Removed: render-delegate.lisp (functionality merged into multi-window-delegate)
+                              )))
   :in-order-to ((test-op (test-op "mcclim-render-stack/tests"))))
 
 (asdf:defsystem :mcclim-render-stack/tests

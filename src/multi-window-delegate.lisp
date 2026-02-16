@@ -14,10 +14,10 @@
   ;; Window Management
   ((window-table :accessor delegate-window-table
                  :initform (make-hash-table :test 'eql)
-                 :documentation "Map SDL3 window-id to render-stack-port")
+                 :documentation "Map SDL3 window-id to port")
    (port-table :accessor delegate-port-table
                :initform (make-hash-table :test 'eq)
-               :documentation "Map render-stack-port to window-id")
+               :documentation "Map port to window-id")
    
    ;; Thread Safety
    (table-lock :accessor delegate-table-lock
@@ -73,7 +73,7 @@ The delegate implements the render-stack RENDER-DELEGATE protocol:
      WINDOW-ID - The SDL3 window ID (integer)"))
 
 (defmethod register-port-with-delegate ((delegate multi-window-render-delegate)
-                                        (port render-stack-port)
+                                        port
                                         window-id)
   "Register a port with the delegate.
    
@@ -92,7 +92,7 @@ The delegate implements the render-stack RENDER-DELEGATE protocol:
      PORT - The render-stack-port to unregister"))
 
 (defmethod unregister-port-from-delegate ((delegate multi-window-render-delegate)
-                                          (port render-stack-port))
+                                          port)
   "Unregister a port from the delegate.
    
    Thread Contract: May be called from any thread. Acquires table-lock and display-list-lock."

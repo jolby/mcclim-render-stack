@@ -237,18 +237,16 @@
        (make-instance 'window-manager-delete-event
                       :sheet sheet))
 
-      (:window-resized
-       ;; Window was resized - update surface and create configuration event
-       (when (port-delegate port)
-         (update-delegate-surface (port-delegate port)))
-       ;; Get new size from window
-       (let ((width (rs-host:window-width window))
-             (height (rs-host:window-height window)))
-         (make-instance 'window-configuration-event
-                        :sheet sheet
-                        :x 0 :y 0
-                        :width width
-                        :height height)))
+       (:window-resized
+        ;; Window was resized - update surface and create configuration event
+        (when (port-delegate port)
+          (update-delegate-surface (port-delegate port)))
+        ;; Get new size from window
+        (let ((width (rs-host:window-width window))
+              (height (rs-host:window-height window)))
+          (make-instance 'window-configuration-event
+                         :sheet sheet
+                         :region (clim:make-bounding-rectangle 0 0 width height))))
 
       (:window-exposed
        ;; Window needs repaint

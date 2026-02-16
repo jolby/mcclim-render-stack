@@ -9,7 +9,23 @@
   (:import-from :climi
                 #:standard-pointer
                 #:pointer-sheet
-                #:port-modifier-state)
+                #:port-modifier-state
+                ;; Event classes
+                #:window-destroy-event
+                #:window-manager-delete-event
+                #:window-configuration-event
+                #:window-repaint-event
+                #:window-manager-focus-event
+                #:window-map-event
+                #:window-unmap-event
+                #:pointer-enter-event
+                #:pointer-exit-event
+                #:key-press-event
+                #:key-release-event
+                #:pointer-button-press-event
+                #:pointer-button-release-event
+                #:pointer-motion-event
+                #:pointer-scroll-event)
   (:import-from :render-stack
                 #:render-delegate
                 #:make-render-engine

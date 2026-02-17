@@ -32,11 +32,13 @@
                                  (:file "test-utils" :depends-on ("package" "suites"))
                                  (:file "backend-tests" :depends-on ("package" "suites" "test-utils"))
                                  (:file "ink-conversion-tests" :depends-on ("package" "suites" "test-utils" "backend-tests"))
-                                 (:file "test-multi-window-delegate" :depends-on ("package" "suites" "test-utils"))
-                                 ;; bd-3hi.9: test-global-engine.lisp
-                                 ;; bd-3hi.9: test-port-refactor.lisp  
-                                 ;; bd-3hi.10: test-integration.lisp
-                                 )))
+                                  (:file "test-multi-window-delegate" :depends-on ("package" "suites" "test-utils"))
+                                  ;; bd-3hi.9: Tests for Task 1.5
+                                  (:file "test-global-engine" :depends-on ("package" "suites" "test-utils"))
+                                  ;; bd-3hi.9: Tests for Task 1.6
+                                  (:file "test-port-refactor" :depends-on ("package" "suites" "test-utils"))
+                                  ;; bd-3hi.10: test-integration.lisp
+                                  )))
   :perform (asdf:test-op (op c)
                      (uiop:symbol-call :parachute :test :mcclim-render-stack-tests)))
 

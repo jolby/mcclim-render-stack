@@ -22,3 +22,13 @@
 (define-test protocol-methods-suite
   :parent multi-window-delegate-suite
   :description   "Tests for render-delegate protocol methods.")
+
+;; Task 1.5: Global Engine Infrastructure
+(define-test global-engine-suite
+  :parent mcclim-render-stack-suite
+  :description "Test suite for global engine infrastructure.")
+
+;; Task 1.6: Port Refactor
+(define-test port-refactor-suite
+  :parent mcclim-render-stack-suite
+  :description "Test suite for port refactor.")

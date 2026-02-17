@@ -32,3 +32,8 @@
 (define-test port-refactor-suite
   :parent mcclim-render-stack-suite
   :description "Test suite for port refactor.")
+
+;; Task bd-3hi.10: Integration Tests
+(define-test integration-suite
+  :parent mcclim-render-stack-suite
+  :description "Integration tests for end-to-end McCLIM render-stack backend flow.")

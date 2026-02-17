@@ -67,25 +67,40 @@ Event Flow:
 (defmethod initialize-instance :after ((port render-stack-port) &key)
   "Initialize port. Does NOT create window/engine - deferred to realize-mirror.
    
-   Thread Contract: Can be called from any thread. Dispatches to main thread for SDL3."
-  ;; Initialize SDL3 on main thread
-  (rs-internals:register-main-thread)
-  (trivial-main-thread:call-in-main-thread
-   (lambda () (%init-port-on-main-thread port)))
+   Thread Contract: Can be called from any thread. Creates background thread for SDL3."
   
-  ;; Initialize typography context
+  ;; Initialize typography context (doesn't need SDL3)
   (setf (port-typography-context port) (frs:make-typography-context))
   
   ;; Assert multiprocessing mode (required for concurrent-queue)
   (assert clim-sys:*multiprocessing-p* ()
           "render-stack-port requires multiprocessing (concurrent-queue)")
   
-  ;; Register main thread and initialize global engine
-  (trivial-main-thread:call-in-main-thread
+  ;; Start SDL3 operations in a dedicated thread
+  ;; SDL3 requires all operations (init, events, GL) on the same thread
+  (bt:make-thread
    (lambda ()
+     ;; Register this thread as the main thread for SDL3/GL operations
+     (rs-internals:register-main-thread)
+     ;; Initialize SDL3 on this thread
+     (rs-sdl3:init-sdl3-video)
+     ;; Create host
+     (setf (port-host port) (make-instance 'rs-sdl3:sdl3-host))
+     ;; Initialize global engine
      (initialize-global-engine)
-     ;; Start the port's main-thread loop
-     (main-thread-loop port))))
+     ;; Run the main event/render loop (this blocks until port-quit-requested)
+     (main-thread-loop port))
+   :name (format nil "mcclim-rs-main-~A" (gensym)))
+  
+  ;; Wait a bit for the background thread to initialize
+  ;; This ensures host and engine are ready before returning
+  (loop repeat 100
+        until (and (port-host port) mcclim-render-stack::*global-engine-initialized*)
+        do (sleep 0.01))
+  
+  ;; Verify initialization succeeded
+  (unless (port-host port)
+    (error "Failed to initialize SDL3 host - timeout waiting for background thread")))
 
 ;;; ============================================================================
 ;;; Main Thread Loop (CRITICAL - replaces custom queue + event thread)

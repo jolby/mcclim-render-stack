@@ -24,7 +24,7 @@
   ((active-frames :initform 0
                   :accessor render-stack-frame-manager-active-frames
                   :documentation "Reference count of adopted frames")
-   (frame-lock :initform (bt2:make-lock "render-stack-frame-manager")
+   (frame-lock :initform (bt2:make-lock :name "render-stack-frame-manager")
                :reader render-stack-frame-manager-lock))
   (:documentation "Frame manager for render-stack backend."))
 

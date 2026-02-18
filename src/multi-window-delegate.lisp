@@ -21,7 +21,7 @@
    
    ;; Thread Safety
    (table-lock :accessor delegate-table-lock
-               :initform (bt2:make-lock "delegate-table-lock")
+               :initform (bt2:make-lock :name "delegate-table-lock")
                :documentation "Lock for window/port table modifications")
    
    ;; Display List Management
@@ -29,7 +29,7 @@
                           :initform (make-hash-table :test 'eq)
                           :documentation "Map port → display-list (UI thread writes, main thread reads)")
    (display-list-lock :accessor delegate-display-list-lock
-                      :initform (bt2:make-lock "display-list-lock")
+                      :initform (bt2:make-lock :name "display-list-lock")
                       :documentation "Lock for atomic display list swap")
    
    ;; Frame State
@@ -37,7 +37,7 @@
                 :initform nil
                 :documentation "List of ports needing redraw (protected by dirty-lock)")
    (dirty-lock :accessor delegate-dirty-lock
-               :initform (bt2:make-lock "dirty-ports-lock")
+               :initform (bt2:make-lock :name "dirty-ports-lock")
                :documentation "Lock for dirty-ports list")
    
    ;; Impeller Resources

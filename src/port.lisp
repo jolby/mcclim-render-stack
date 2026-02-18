@@ -11,12 +11,10 @@
 ;;;; - Event flow: SDL3 → drain-sdl3-events → distribute-event → sheet queue
 ;;;;
 ;;;; THREADING REQUIREMENT:
-;;;; SDL3/GL operations must run on the OS main thread.
-;;;; The port handles this automatically: if *runner* is already bound at
-;;;; port-creation time (expert or frame-mixin mode), SDL3 is initialized
-;;;; immediately. Otherwise SDL3 init is deferred to the run-frame-top-level
-;;;; :around hook on application-frame, which lazily bootstraps the runner.
-;;;; See runner-phases.lisp for the McCLIM-specific runner phases.
+;;;; The application MUST start a main-thread-runner (rs-internals:with-runner
+;;;; or rs-internals:claim-main-thread) BEFORE creating a port. The port uses
+;;;; rs-internals:*runner* to dispatch SDL3/GL work to the OS main thread.
+;;;; See runner-phases.lisp for the McCLIM-specific phases.
 
 (in-package :mcclim-render-stack)
 
@@ -51,9 +49,8 @@ Threading Model:
 - UI/App Thread: McCLIM event loop, process-next-event, drawing
 - Frame Thread: render-stack engine (drives begin-frame/end-frame)
 
-SDL3 init is deferred if *runner* is not bound at creation time — the
-run-frame-top-level :around hook on application-frame bootstraps the
-runner and finishes initialization transparently.
+REQUIREMENT: rs-internals:*runner* must be bound before port creation.
+Use rs-internals:with-runner at application startup.
 
 Event Flow:
 1. Runner's clim-event-drain-phase polls SDL3 via drain-sdl3-events
@@ -65,59 +62,41 @@ Event Flow:
 ;;; Port Initialization
 ;;; ============================================================================
 
-(defun %port-init-sdl3 (port)
-  "Initialize SDL3, the global host, and the global engine on the main thread.
-
-Idempotent: skips if PORT-HOST is already set.
-
-Thread dispatch:
-  - If called from the OS main thread: executes directly (handles the lazy
-    bootstrap Case A where runner-run has not yet started).
-  - If called from another thread: dispatches via SUBMIT-TO-MAIN-THREAD
-    (blocking). Requires *RUNNER* to be bound and running.
-
-After engine init, installs the standard runner phases if the runner has
-no phases yet (lazy bootstrap). Expert runners that pre-configure phases
-are left untouched."
-  (unless (port-host port)
-    (flet ((do-init ()
-             ;; Ensure the main-thread registry is populated.
-             ;; In lazy bootstrap Case A the runner hasn't started yet,
-             ;; so register-main-thread hasn't been called yet.
-             (unless rs-internals:*main-thread*
-               (rs-internals:register-main-thread))
-             (rs-sdl3:init-sdl3-video)
-             (setf (port-host port) (make-instance 'rs-sdl3:sdl3-host))
-             (initialize-global-engine)))
-      (if (eq (bt2:current-thread) (rs-internals:find-main-thread))
-          (do-init)
-          (rs-internals:submit-to-main-thread rs-internals:*runner*
-            #'do-init :blocking t :tag :mcclim-port-init)))
-    ;; Wire phases if the runner has none (lazy bootstrap; experts set their own).
-    (let ((runner rs-internals:*runner*))
-      (when (and runner (null (rs-internals:runner-phases runner)))
-        (setf (rs-internals:runner-phases runner)
-              (make-clim-runner-phases))))))
-
 (defmethod initialize-instance :after ((port render-stack-port) &key)
-  "Initialize port. Does NOT create the window/engine — deferred to realize-mirror.
-
-Two modes:
-  Expert / frame-mixin: *runner* is bound at creation time → SDL3 initialized now.
-  Lazy bootstrap:       *runner* is nil → SDL3 deferred to run-frame-top-level :around.
-
-Thread Contract: Can be called from any thread."
-  ;; Typography context is SDL3-independent — always create it immediately.
+  "Initialize port. Does NOT create window/engine — deferred to realize-mirror.
+   
+   REQUIREMENT: rs-internals:*runner* must be bound (application must have
+   started a main-thread-runner before creating the port).
+   
+   Thread Contract: Can be called from any thread. SDL3 init is dispatched
+   to the main thread via the runner's task queue."
+  
+  ;; Initialize typography context (doesn't need SDL3)
   (setf (port-typography-context port) (frs:make-typography-context))
-
-  ;; Multiprocessing is required for McCLIM's concurrent-queue.
+  
+  ;; Assert multiprocessing mode (required for concurrent-queue)
   (assert clim-sys:*multiprocessing-p* ()
           "render-stack-port requires multiprocessing (concurrent-queue)")
-
-  ;; Expert / frame-mixin mode: runner already bound → initialize SDL3 now.
-  ;; Lazy bootstrap mode: runner is nil → SDL3 deferred (see frame-manager.lisp).
-  (when rs-internals:*runner*
-    (%port-init-sdl3 port)))
+  
+  ;; Require an active runner — fail fast with a clear error
+  (unless rs-internals:*runner*
+    (error "render-stack-port requires an active rs-internals:*runner*. ~
+            Start the application with rs-internals:with-runner or ~
+            rs-internals:claim-main-thread before creating the port."))
+  
+  ;; Initialize SDL3 and the global engine on the main thread.
+  ;; If we're already on the main thread, call directly (avoids deadlock).
+  ;; Otherwise, dispatch via the runner's task queue (blocking).
+  (flet ((init-on-main-thread ()
+           (rs-sdl3:init-sdl3-video)
+           (setf (port-host port) (make-instance 'rs-sdl3:sdl3-host))
+           (initialize-global-engine)))
+    (if (rs-internals:runner-main-thread-p rs-internals:*runner*)
+        (init-on-main-thread)
+        (rs-internals:submit-to-main-thread rs-internals:*runner*
+          #'init-on-main-thread
+          :blocking t
+          :tag :mcclim-port-init))))
 
 ;;; ============================================================================
 ;;; NOTE: main-thread-loop has been replaced by runner phases.
@@ -125,19 +104,6 @@ Thread Contract: Can be called from any thread."
 ;;; The runner yield phase (rs-sdl3:make-event-wait-yield-phase) handles
 ;;; OS-level event waiting between iterations.
 ;;; ============================================================================
-
-;;; ============================================================================
-;;; restart-port — override to suppress McCLIM's default I/O thread
-;;; ============================================================================
-
-(defmethod restart-port ((port render-stack-port))
-  "No-op override.
-
-McCLIM's default restart-port spawns a background thread running
-process-next-event in a loop (the port I/O thread). We do not want
-that — our runner phases on the OS main thread handle all SDL3 event
-polling and rendering. Events reach McCLIM via distribute-event called
-from CLIM-EVENT-DRAIN-PHASE.")
 
 ;;; ============================================================================
 ;;; Port Protocol Methods

@@ -4,6 +4,9 @@ CWD := $(shell pwd)
 SBCL ?= sbcl
 QL ?= $(HOME)/quicklisp/setup.lisp
 
+# Interactive REPL (for debugging etc)
+# SBCL_FLAGS := --dynamic-space-size 8096 --noinform
+# Normal non-interactive for batch testing etc.
 SBCL_FLAGS := --dynamic-space-size 8096 --noinform --disable-debugger --non-interactive
 ASDF_BOOT := --eval '(require :asdf)' --eval "(pushnew \#p\"$(CWD)/\" asdf:*central-registry*)"
 QL_BOOT := --eval '(load "$(QL)")'

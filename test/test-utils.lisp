@@ -49,10 +49,10 @@ Skipped tests show as SKIPPED in Parachute output rather than falsely passing."
 Should be called once per test session."
   ;; Register current thread as main thread
   (rs-internals:register-main-thread)
-  (setf *test-main-thread* (bt:current-thread))
+  (setf *test-main-thread* (bt2:current-thread))
   ;; For testing, we can use the same thread as UI or spawn a separate one
   (unless *test-ui-thread*
-    (setf *test-ui-thread* (bt:current-thread))
+    (setf *test-ui-thread* (bt2:current-thread))
     (rs-internals:register-ui-thread)))
 
 (defmacro call-on-main-thread (&body body)
@@ -70,7 +70,7 @@ This is a test helper that runs synchronously."
   `(progn
      (ensure-test-threads-registered)
      ;; For testing, we can run on current thread if it's the UI thread
-     (if (eq (bt:current-thread) *test-ui-thread*)
+     (if (eq (bt2:current-thread) *test-ui-thread*)
          (progn ,@body)
          (error "Test requires separate UI thread - not implemented"))))
 
@@ -158,9 +158,10 @@ OPERATION is a keyword naming the operation being tested (for documentation)."
   (:documentation "Minimal runner for testing. Immediately drains submitted tasks
 on the calling thread instead of running a real loop."))
 
-(defmethod rs-internals:runner-main-thread-p ((runner test-runner))
-  "In tests, the test thread IS the main thread."
-  t)
+;; Interferes with function rs-internals:runner-main-thread-p
+;; (defmethod rs-internals:runner-main-thread-p ((runner test-runner))
+;;   "In tests, the test thread IS the main thread."
+;;   t)
 
 (defmethod rs-internals:runner-state ((runner test-runner))
   :running)

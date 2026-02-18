@@ -39,66 +39,12 @@
   ;; Return the orientation of the display
   :default)
 
-;;; Mirror protocol for grafts
+;;; Mirror class — used by port.lisp's realize-mirror and destroy-mirror
 
 (defclass render-stack-mirror ()
   ((sdl-window :accessor mirror-sdl-window :initarg :sdl-window :initform nil
-               :documentation "The SDL3 window handle.")
-   (impeller-context :accessor mirror-impeller-context :initform nil
-                     :documentation "The Impeller rendering context."))
-  (:documentation "Mirror representing an SDL3 window with Impeller context."))
-
-(defmethod realize-mirror ((port render-stack-port) (sheet mirrored-sheet-mixin))
-  "Create an SDL3 window for a top-level sheet.
-   On the first call, also creates the render delegate and engine.
-   Returns a render-stack-mirror containing the window handle."
-  (let ((window (port-window port)))
-    (if window
-        ;; Reuse existing window for subsequent sheets (single-window mode)
-        (progn
-          (setf (gethash window (port-window-table port)) sheet)
-          (make-instance 'render-stack-mirror :sdl-window window))
-        ;; First sheet: create window, delegate, engine
-        (clim:with-bounding-rectangle* (x y :width w :height h) sheet
-          (let* ((title (climi::sheet-pretty-name sheet))
-                 (host (port-host port))
-                 (new-window (rs-host:make-window host
-                                                  :title title
-                                                  :width (floor w)
-                                                  :height (floor h)
-                                                  :x (floor x)
-                                                  :y (floor y))))
-            ;; Store window on port
-            (setf (port-window port) new-window
-                  (port-gl-context port) (rs-host:window-graphics-context new-window))
-            ;; Register window → CLIM sheet mapping
-            (setf (gethash new-window (port-window-table port)) sheet)
-            ;; Create render delegate and engine
-            (let ((delegate (make-instance 'clim-render-delegate
-                                           :port port
-                                           :window new-window)))
-              (setf (port-delegate port) delegate)
-              (let ((engine (make-render-engine :delegate delegate
-                                                :pipeline-depth 2
-                                                :target-fps 60)))
-                (setf (port-engine port) engine)
-                (render-engine-start engine)))
-            ;; Start event thread now that we have a window
-            (unless (port-event-thread port)
-              (start-event-thread port))
-            (make-instance 'render-stack-mirror :sdl-window new-window))))))
-
-(defmethod destroy-mirror ((port render-stack-port) (sheet mirrored-sheet-mixin))
-  "Destroy the mirror associated with SHEET."
-  (let ((mirror (climi::sheet-direct-mirror sheet)))
-    (when mirror
-      (let ((window (mirror-sdl-window mirror)))
-        (when window
-          ;; Remove from window→sheet table
-          (remhash window (port-window-table port))
-          (rs-host:destroy-window (port-host port) window)))
-      ;; Clear the mirror from the sheet
-      (setf (climi::sheet-direct-mirror sheet) nil))))
+               :documentation "The SDL3 window handle."))
+  (:documentation "Mirror representing an SDL3 window managed by the render-stack port."))
 
 (defmethod climi::enable-mirror ((port render-stack-port) (sheet mirrored-sheet-mixin))
   "Enable the sheet's mirror (make it visible)."

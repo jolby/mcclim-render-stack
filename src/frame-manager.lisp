@@ -226,11 +226,11 @@ In both cases RUN-FRAME-TOP-LEVEL returns when the event loop exits."
              ;; Bg thread runs call-next-method (McCLIM's :around + event loop).
              ;; Main thread blocks in runner-run.
              (%bootstrap-runner-main-thread new-runner
-                                           (lambda () (call-next-method)))
+                                            (lambda () (call-next-method)))
              ;; Case B: on worker thread (e.g., SLIME).
              ;; Start runner on main thread first, then call-next-method here.
              (%bootstrap-runner-worker-thread new-runner
-                                             (lambda () (call-next-method)))))))))
+                                              (lambda () (call-next-method)))))))))
 
 ;;; ============================================================================
 ;;; Initialization

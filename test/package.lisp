@@ -1,5 +1,6 @@
 (defpackage :mcclim-render-stack-tests
   (:use :cl :parachute :mcclim-render-stack)
+  (:local-nicknames (:rs-internals :render-stack-internals))
   (:import-from :clim
                 #:graft-width
                 #:graft-height

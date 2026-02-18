@@ -277,10 +277,11 @@
   "Test that drain-sdl3-events function exists and is callable."
   (true (fboundp 'mcclim-render-stack::drain-sdl3-events)))
 
-(define-test main-thread-loop-function-exists
+(define-test runner-phases-exist
   :parent mcclim-render-stack-suite
-  "Test that main-thread-loop function exists."
-  (true (fboundp 'mcclim-render-stack::main-thread-loop)))
+  "Test that runner phase constructors exist (replaced main-thread-loop)."
+  (true (fboundp 'mcclim-render-stack::make-clim-event-drain-phase))
+  (true (fboundp 'mcclim-render-stack::make-clim-render-phase)))
 
 (define-test translate-sdl3-event-moved-to-render-delegate
   :parent mcclim-render-stack-suite

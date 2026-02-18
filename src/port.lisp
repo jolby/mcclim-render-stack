@@ -5,10 +5,18 @@
 ;;;; and Flutter Impeller (via render-stack) for rendering.
 ;;;;
 ;;;; CRITICAL ARCHITECTURE:
-;;;; - NO custom event queue - Uses McCLIM's concurrent-queue via distribute-event
-;;;; - Port owns main-thread-loop - Drains SDL3 events and renders
-;;;; - process-next-event is minimal stub - Events come via distribute-event
+;;;; - NO custom event queue — Uses McCLIM's concurrent-queue via distribute-event
+;;;; - Runner phases handle event drain + rendering on the OS main thread
+;;;; - process-next-event is minimal stub — Events come via distribute-event
 ;;;; - Event flow: SDL3 → drain-sdl3-events → distribute-event → sheet queue
+;;;;
+;;;; THREADING REQUIREMENT:
+;;;; SDL3/GL operations must run on the OS main thread.
+;;;; The port handles this automatically: if *runner* is already bound at
+;;;; port-creation time (expert or frame-mixin mode), SDL3 is initialized
+;;;; immediately. Otherwise SDL3 init is deferred to the run-frame-top-level
+;;;; :around hook on application-frame, which lazily bootstraps the runner.
+;;;; See runner-phases.lisp for the McCLIM-specific runner phases.
 
 (in-package :mcclim-render-stack)
 
@@ -25,12 +33,9 @@
    (engine :accessor port-engine :initform nil)
    (delegate :accessor port-delegate :initform nil)
    (gl-context :accessor port-gl-context :initform nil)
-   ;; REMOVED: event-thread (events handled on main thread)
    (quit-requested :accessor port-quit-requested :initform nil)
    (typography-context :accessor port-typography-context :initform nil
                        :documentation "Impeller typography context for text rendering.")
-   ;; REMOVED: event-queue, event-queue-lock, event-queue-condition
-   ;; Events now flow through McCLIM's concurrent-queue via distribute-event
    (needs-redraw-p :accessor port-needs-redraw-p
                    :initform t
                    :documentation "T if port needs a redraw.")
@@ -42,12 +47,16 @@
   (:documentation "McCLIM port using render-stack (SDL3 + Impeller).
 
 Threading Model:
-- Main Thread: SDL3/GL operations, drain-sdl3-events, rendering
-- UI Thread: McCLIM event loop, process-next-event
+- Main Thread (OS): Runner phases drain SDL3 events and rasterize frames
+- UI/App Thread: McCLIM event loop, process-next-event, drawing
 - Frame Thread: render-stack engine (drives begin-frame/end-frame)
 
+SDL3 init is deferred if *runner* is not bound at creation time — the
+run-frame-top-level :around hook on application-frame bootstraps the
+runner and finishes initialization transparently.
+
 Event Flow:
-1. Main thread polls SDL3 via drain-sdl3-events in main-thread-loop
+1. Runner's clim-event-drain-phase polls SDL3 via drain-sdl3-events
 2. Events translated and routed via distribute-event to sheet's concurrent-queue
 3. Frame thread wakes via condition-notify, calls begin-frame
 4. UI thread processes events from queue via process-next-event"))
@@ -56,153 +65,117 @@ Event Flow:
 ;;; Port Initialization
 ;;; ============================================================================
 
-(defun %init-port-on-main-thread (port)
-  "Initialize SDL3 and create the host on the main thread.
-   Window, delegate, and engine are created later in realize-mirror."
-  ;; Initialize SDL3 video
-  (rs-sdl3:init-sdl3-video)
-  ;; Create host (no window yet — deferred to realize-mirror)
-  (setf (port-host port) (make-instance 'rs-sdl3:sdl3-host)))
+(defun %port-init-sdl3 (port)
+  "Initialize SDL3, the global host, and the global engine on the main thread.
+
+Idempotent: skips if PORT-HOST is already set.
+
+Thread dispatch:
+  - If called from the OS main thread: executes directly (handles the lazy
+    bootstrap Case A where runner-run has not yet started).
+  - If called from another thread: dispatches via SUBMIT-TO-MAIN-THREAD
+    (blocking). Requires *RUNNER* to be bound and running.
+
+After engine init, installs the standard runner phases if the runner has
+no phases yet (lazy bootstrap). Expert runners that pre-configure phases
+are left untouched."
+  (unless (port-host port)
+    (flet ((do-init ()
+             ;; Ensure the main-thread registry is populated.
+             ;; In lazy bootstrap Case A the runner hasn't started yet,
+             ;; so register-main-thread hasn't been called yet.
+             (unless rs-internals:*main-thread*
+               (rs-internals:register-main-thread))
+             (rs-sdl3:init-sdl3-video)
+             (setf (port-host port) (make-instance 'rs-sdl3:sdl3-host))
+             (initialize-global-engine)))
+      (if (eq (bt2:current-thread) (rs-internals:find-main-thread))
+          (do-init)
+          (rs-internals:submit-to-main-thread rs-internals:*runner*
+            #'do-init :blocking t :tag :mcclim-port-init)))
+    ;; Wire phases if the runner has none (lazy bootstrap; experts set their own).
+    (let ((runner rs-internals:*runner*))
+      (when (and runner (null (rs-internals:runner-phases runner)))
+        (setf (rs-internals:runner-phases runner)
+              (make-clim-runner-phases))))))
 
 (defmethod initialize-instance :after ((port render-stack-port) &key)
-  "Initialize port. Does NOT create window/engine - deferred to realize-mirror.
-   
-   Thread Contract: Can be called from any thread. Creates background thread for SDL3."
-  
-  ;; Initialize typography context (doesn't need SDL3)
+  "Initialize port. Does NOT create the window/engine — deferred to realize-mirror.
+
+Two modes:
+  Expert / frame-mixin: *runner* is bound at creation time → SDL3 initialized now.
+  Lazy bootstrap:       *runner* is nil → SDL3 deferred to run-frame-top-level :around.
+
+Thread Contract: Can be called from any thread."
+  ;; Typography context is SDL3-independent — always create it immediately.
   (setf (port-typography-context port) (frs:make-typography-context))
-  
-  ;; Assert multiprocessing mode (required for concurrent-queue)
+
+  ;; Multiprocessing is required for McCLIM's concurrent-queue.
   (assert clim-sys:*multiprocessing-p* ()
           "render-stack-port requires multiprocessing (concurrent-queue)")
-  
-  ;; Start SDL3 operations in a dedicated thread
-  ;; SDL3 requires all operations (init, events, GL) on the same thread
-  (bt:make-thread
-   (lambda ()
-     ;; Register this thread as the main thread for SDL3/GL operations
-     (rs-internals:register-main-thread)
-     ;; Initialize SDL3 on this thread
-     (rs-sdl3:init-sdl3-video)
-     ;; Create host
-     (setf (port-host port) (make-instance 'rs-sdl3:sdl3-host))
-     ;; Initialize global engine
-     (initialize-global-engine)
-     ;; Run the main event/render loop (this blocks until port-quit-requested)
-     (main-thread-loop port))
-   :name (format nil "mcclim-rs-main-~A" (gensym)))
-  
-  ;; Wait a bit for the background thread to initialize
-  ;; This ensures host and engine are ready before returning
-  (loop repeat 100
-        until (and (port-host port) mcclim-render-stack::*global-engine-initialized*)
-        do (sleep 0.01))
-  
-  ;; Verify initialization succeeded
-  (unless (port-host port)
-    (error "Failed to initialize SDL3 host - timeout waiting for background thread")))
+
+  ;; Expert / frame-mixin mode: runner already bound → initialize SDL3 now.
+  ;; Lazy bootstrap mode: runner is nil → SDL3 deferred (see frame-manager.lisp).
+  (when rs-internals:*runner*
+    (%port-init-sdl3 port)))
 
 ;;; ============================================================================
-;;; Main Thread Loop (CRITICAL - replaces custom queue + event thread)
+;;; NOTE: main-thread-loop has been replaced by runner phases.
+;;; See runner-phases.lisp: clim-event-drain-phase + clim-render-phase.
+;;; The runner yield phase (rs-sdl3:make-event-wait-yield-phase) handles
+;;; OS-level event waiting between iterations.
 ;;; ============================================================================
 
-(defun main-thread-loop (port)
-  "Main thread event+render loop.
-   Runs on main thread via trivial-main-thread. Responsible for:
-   1. Draining SDL3 events into McCLIM sheet queues (EVERY iteration)
-   2. Non-blocking pipeline consume + rasterization (when frames ready)
-   3. Yielding via SDL_WaitEventTimeout (OS-level, no busy-spin)
-   
-   Thread Contract: MUST be called on main thread."
-  (rs-internals:assert-main-thread main-thread-loop)
-  
-  (let ((engine *global-engine*)
-        (delegate *global-delegate*))
-    (loop until (port-quit-requested port) do
-      ;; 1. ALWAYS drain SDL3 events → distribute to McCLIM sheet queues
-      ;; This wakes frame threads via concurrent-queue condition-notify
-      (drain-sdl3-events delegate)
-      
-      ;; 2. Non-blocking consume: rasterize if a frame is ready
-      ;; Use pipeline-try-consume (NOT pipeline-consume which blocks)
-      (multiple-value-bind (item got-it)
-          (render-stack:pipeline-try-consume 
-           (render-stack:render-engine-pipeline engine))
-        (when got-it
-          (handler-case
-              (render-stack:render-delegate-draw delegate item)
-            (error (e) 
-              (log:error :mcclim-render-stack "Error in delegate-draw: ~A" e)))))
-      
-      ;; 3. Yield to OS — wakes on SDL event or timeout
-      ;; Uses OS-level blocking (epoll/kqueue), not busy-wait
-      (rs-sdl3:wait-event-timeout 1))))  ; 1ms timeout
+;;; ============================================================================
+;;; restart-port — override to suppress McCLIM's default I/O thread
+;;; ============================================================================
 
-;;; ============================================================================
-;;; REMOVED: Custom Event Queue Operations
-;;; ============================================================================
-;;;
-;;; The following have been REMOVED in favor of McCLIM's concurrent-queue:
-;;; - port-enqueue-event (use distribute-event instead)
-;;; - port-dequeue-event (events come via sheet's concurrent-queue)
-;;; - port-peek-event (not needed)
-;;; - port-event-queue-empty-p (not needed)
-;;; - start-event-thread (events handled on main thread)
-;;; - event-loop (replaced by main-thread-loop)
-;;;
-;;; Event translation functions moved to multi-window-delegate.lisp:
-;;; - translate-sdl3-event
-;;; - sdl3-modifiers-to-clim
-;;; - sdl3-keycode-to-key-name
-;;; - sdl3-keycode-to-character
+(defmethod restart-port ((port render-stack-port))
+  "No-op override.
+
+McCLIM's default restart-port spawns a background thread running
+process-next-event in a loop (the port I/O thread). We do not want
+that — our runner phases on the OS main thread handle all SDL3 event
+polling and rendering. Events reach McCLIM via distribute-event called
+from CLIM-EVENT-DRAIN-PHASE.")
 
 ;;; ============================================================================
 ;;; Port Protocol Methods
 ;;; ============================================================================
 
 (defmethod destroy-port ((port render-stack-port))
-  "Clean up all resources."
+  "Clean up port resources.
+   
+   Does NOT stop the runner, shut down the global engine, or quit SDL3 —
+   those are application-level concerns managed at startup/shutdown."
   ;; Signal quit
   (setf (port-quit-requested port) t)
-  
-  ;; REMOVED: No event thread to wait for (events on main thread now)
   
   ;; Unregister from global delegate if registered
   (when (and *global-delegate* (port-window-id port))
     (unregister-port-from-delegate *global-delegate* port))
-  
-  ;; Stop and destroy engine (only if this port created it - but it's global now)
-  ;; Global engine is shut down via shutdown-global-engine, not here
-  
-  ;; Clean up delegate (only if this port created it - but it's global now)
-  ;; Global delegate is cleaned up with engine
   
   ;; Release typography context
   (when (port-typography-context port)
     (frs:release-typography-context (port-typography-context port))
     (setf (port-typography-context port) nil))
 
-  ;; Destroy window
+  ;; Destroy window on the main thread via runner
   (when (port-window port)
-    (rs-host:destroy-window (port-host port) (port-window port))
-    (setf (port-window port) nil))
-  
-  ;; Quit SDL3
-  (rs-sdl3:quit-sdl3))
+    (let ((window (port-window port)))
+      (rs-sdl3:destroy-sdl3-window window))
+    (setf (port-window port) nil)))
 
 (defmethod process-next-event ((port render-stack-port) 
                                &key wait-function (timeout 0.016))
   "Process-next-event for render-stack port.
    
-   In our architecture, the main thread pushes events via distribute-event
-   from the main-thread-loop. Frame threads consume from per-sheet
+   In our architecture, runner phases push events via distribute-event
+   from the clim-event-drain-phase. Frame threads consume from per-sheet
    concurrent-queues. This method satisfies the McCLIM protocol contract.
    
    Returns: (values NIL :wait-function) if wait-function fires,
-            (values NIL :timeout) otherwise.
-   
-   Thread Contract: MUST be called on UI thread."
-  (rs-internals:assert-ui-thread process-next-event)
+            (values NIL :timeout) otherwise."
   
   ;; Check quit flag
   (when (port-quit-requested port)
@@ -232,8 +205,6 @@ Event Flow:
   ;; Return protocol per McCLIM spec
   (values nil :timeout))
 
-;; REMOVED: get-next-event method - McCLIM only requires process-next-event
-
 (defmethod port-force-output ((port render-stack-port))
   "Flush pending drawing operations."
   ;; The render engine handles this automatically
@@ -254,27 +225,25 @@ Event Flow:
 (defmethod realize-mirror ((port render-stack-port) (sheet mirrored-sheet-mixin))
   "Create mirror for sheet and register with global delegate.
    
-   Thread Contract: Called on UI thread. SDL3 window creation dispatched to main thread."
+   Thread Contract: Called on UI thread. SDL3 window creation dispatched
+   to the main thread via define-main-thread-op (transparent dispatch)."
   (clim:with-bounding-rectangle* (x y :width w :height h) sheet
-    (let* ((host (port-host port))
-           ;; Create window on main thread
-           (window (trivial-main-thread:call-in-main-thread
-                    (lambda ()
-                      (rs-host:make-window host
-                                          :title (climi::sheet-pretty-name sheet)
-                                          :width (floor w)
-                                          :height (floor h)
-                                          :x (floor x)
-                                          :y (floor y)))))
-           ;; Get SDL3 window ID for event routing
-           (window-id (trivial-main-thread:call-in-main-thread
-                       (lambda ()
-                         (%sdl3:get-window-id 
-                          (rs-sdl3::sdl3-window-handle window))))))
+    (let* (;; Create window — rs-sdl3:make-sdl3-window auto-dispatches to main thread
+           (window (rs-sdl3:make-sdl3-window
+                    (or (climi::sheet-pretty-name sheet) "(McCLIM)")
+                    (floor w) (floor h)
+                    :x (floor x) :y (floor y)))
+           ;; Get SDL3 window ID for event routing (main thread call via runner)
+           (window-id (rs-internals:submit-to-main-thread rs-internals:*runner*
+                        (lambda ()
+                          (%sdl3:get-window-id
+                           (rs-sdl3::sdl3-window-handle window)))
+                        :blocking t
+                        :tag :get-window-id)))
       
       ;; Store on port
       (setf (port-window port) window
-            (port-gl-context port) (rs-host:window-graphics-context window)
+            (port-gl-context port) (rs-sdl3::sdl3-window-gl-context window)
             (port-window-id port) window-id)
       
       ;; Register with global delegate
@@ -288,7 +257,10 @@ Event Flow:
                      :sdl-window window))))
 
 (defmethod destroy-mirror ((port render-stack-port) (sheet mirrored-sheet-mixin))
-  "Destroy mirror and unregister from global delegate."
+  "Destroy mirror and unregister from global delegate.
+   
+   Thread Contract: Called on UI thread. SDL3 window destruction dispatched
+   to the main thread via define-main-thread-op (transparent dispatch)."
   (let ((mirror (climi::sheet-direct-mirror sheet)))
     (when mirror
       (let ((window (mirror-sdl-window mirror)))
@@ -299,13 +271,11 @@ Event Flow:
           ;; Unregister from delegate
           (unregister-port-from-delegate *global-delegate* port)
           
-          ;; Destroy window on main thread
-          (trivial-main-thread:call-in-main-thread
-           (lambda ()
-             (rs-host:destroy-window (port-host port) window))))
-        
-        ;; Clear mirror from sheet
-        (setf (climi::sheet-direct-mirror sheet) nil)))))
+          ;; Destroy window — auto-dispatches to main thread
+          (rs-sdl3:destroy-sdl3-window window)))
+      
+      ;; Clear mirror from sheet
+      (setf (climi::sheet-direct-mirror sheet) nil))))
 
 ;;; ============================================================================
 ;;; Port Capabilities
@@ -328,16 +298,59 @@ Event Flow:
           (make-instance 'render-stack-pointer :port port))))
 
 ;;; ============================================================================
-;;; Backwards Compatibility
+;;; Application Startup Helper
 ;;; ============================================================================
 
-;; These functions are deprecated but kept for compatibility during transition
-(defun port-enqueue-event (port event)
-  "DEPRECATED: Events now use distribute-event. Stub for compatibility."
-  (declare (ignore port event))
-  (warn "port-enqueue-event is deprecated - use distribute-event instead"))
+(defun start-mcclim-render-stack (&key (event-budget-ms 4.0) (yield-timeout-ms 16))
+  "Start a main-thread-runner configured for McCLIM.
+   
+   This function MUST be called from the OS main thread (or via
+   rs-internals:claim-main-thread). It:
+   1. Creates runner phases for CLIM event drain, rendering, and yielding
+   2. Starts the runner on the main thread
+   3. Returns a function that starts the CLIM application in a background thread
+   
+   Usage:
+     (rs-internals:claim-main-thread
+       (lambda ()
+         (start-mcclim-render-stack)))
+   
+   Or for applications that need to run code in the background thread:
+     (rs-internals:claim-main-thread
+       (lambda ()
+         (rs-internals:with-runner (runner
+             :phases (make-clim-runner-phases))
+           ;; Body runs in background thread
+           (my-clim-app))))
+   
+   Arguments:
+     EVENT-BUDGET-MS  — ms budget for event draining per iteration (default 4.0)
+     YIELD-TIMEOUT-MS — ms to wait for events between iterations (default 16)"
+  (declare (ignore event-budget-ms yield-timeout-ms))
+  ;; Placeholder for now — the phases need *global-engine* and *global-delegate*
+  ;; which are created during port init. See make-clim-runner-phases.
+  (error "start-mcclim-render-stack: Use rs-internals:with-runner with ~
+          make-clim-runner-phases after global engine init. ~
+          See runner-phases.lisp for details."))
 
-(defun port-dequeue-event (port &optional timeout)
-  "DEPRECATED: Events now come via concurrent-queue. Stub for compatibility."
-  (declare (ignore port timeout))
-  nil)
+(defun make-clim-runner-phases (&key (event-budget-ms 4.0) (yield-timeout-ms 16))
+  "Create the list of runner phases for a McCLIM main-thread-runner.
+   
+   REQUIREMENT: *global-engine* and *global-delegate* must be initialized
+   before calling this (they are set up during port initialization).
+   
+   Phase order:
+   1. CLIM event drain — polls SDL3 events, routes to McCLIM sheet queues
+   2. CLIM render — non-blocking pipeline consume + delegate draw
+   3. Event wait yield — OS-level blocking until next event or timeout
+   
+   Arguments:
+     EVENT-BUDGET-MS  — ms budget for event draining per iteration (default 4.0)
+     YIELD-TIMEOUT-MS — ms to wait for events between iterations (default 16)"
+  (unless (and *global-engine* *global-delegate*)
+    (error "make-clim-runner-phases requires initialized global engine and delegate. ~
+            Create a port first, then call this."))
+  (list (make-clim-event-drain-phase *global-delegate*
+                                      :time-budget-ms event-budget-ms)
+        (make-clim-render-phase *global-engine* *global-delegate*)
+        (rs-sdl3:make-event-wait-yield-phase :timeout-ms yield-timeout-ms)))

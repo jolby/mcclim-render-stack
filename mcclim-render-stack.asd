@@ -14,8 +14,9 @@
                  :components ((:file "package")
                               (:file "multi-window-delegate" :depends-on ("package"))
                               (:file "globals" :depends-on ("package" "multi-window-delegate"))
+                              (:file "runner-phases" :depends-on ("package" "multi-window-delegate" "globals"))
                               (:file "pointer" :depends-on ("package"))
-                              (:file "port" :depends-on ("package" "pointer" "multi-window-delegate" "globals"))
+                              (:file "port" :depends-on ("package" "pointer" "multi-window-delegate" "globals" "runner-phases"))
                               (:file "medium" :depends-on ("port"))
                               (:file "graft" :depends-on ("port"))
                               (:file "frame-manager" :depends-on ("graft"))
@@ -25,7 +26,8 @@
 (asdf:defsystem :mcclim-render-stack/tests
   :depends-on (:mcclim-render-stack
                :parachute
-               :uiop)
+               :uiop
+               :lparallel)
   :components ((:module "test"
                     :components ((:file "package")
                                  (:file "suites" :depends-on ("package"))

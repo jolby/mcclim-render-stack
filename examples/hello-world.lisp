@@ -64,7 +64,11 @@
       (frame-exit (pane-frame pane)))))
 
 ;;; Application frame definition
-(define-application-frame hello-world ()
+;;; Include RENDER-STACK-FRAME-MIXIN for automatic runner bootstrap.
+;;; This lets (run-frame-top-level ...) work from both the main thread
+;;; and worker threads (e.g., SLIME) without any extra startup ceremony.
+(define-application-frame hello-world
+    (clim-render-stack:render-stack-frame-mixin)
   ()
   (:panes
    (canvas :application

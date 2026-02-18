@@ -53,12 +53,18 @@
 
    ;; Frame manager
    #:render-stack-frame-manager
+   #:render-stack-frame-mixin
 
     ;; Render delegate
     #:clim-render-delegate
 
     ;; Server path
     #:initialize-render-stack
+
+    ;; Runner phases
+    #:make-clim-event-drain-phase
+    #:make-clim-render-phase
+    #:make-clim-runner-phases
 
     ;; Test helpers
     #:make-rgba-color

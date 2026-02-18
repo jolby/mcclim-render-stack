@@ -57,9 +57,11 @@ Should be called once per test session."
 
 (defmacro call-on-main-thread (&body body)
   "Execute body on the main thread and return the result.
-This is a test helper that runs synchronously."
+This is a test helper that runs synchronously.
+Also ensures *runner* is bound for port creation."
   `(progn
      (ensure-test-threads-registered)
+     (ensure-test-runner)
      ,@body))
 
 (defmacro call-on-ui-thread (&body body)
@@ -144,6 +146,44 @@ OPERATION is a keyword naming the operation being tested (for documentation)."
         (mock-end-frame-called delegate) nil
         (mock-drain-called delegate) 0
         (mock-notify-idle-called delegate) nil))
+
+;;; ============================================================================
+;;; Test Runner (for *runner* requirement)
+;;; ============================================================================
+
+(defclass test-runner ()
+  ((task-queue :accessor test-runner-task-queue
+               :initform (lparallel.queue:make-queue))
+   (thread :accessor test-runner-thread :initform nil))
+  (:documentation "Minimal runner for testing. Immediately drains submitted tasks
+on the calling thread instead of running a real loop."))
+
+(defmethod rs-internals:runner-main-thread-p ((runner test-runner))
+  "In tests, the test thread IS the main thread."
+  t)
+
+(defmethod rs-internals:runner-state ((runner test-runner))
+  :running)
+
+(defmethod rs-internals:runner-task-queue ((runner test-runner))
+  (test-runner-task-queue runner))
+
+(defvar *test-runner* nil
+  "Singleton test runner, created lazily.")
+
+(defun ensure-test-runner ()
+  "Ensure *runner* is bound to a test runner for port creation.
+In tests, the test-runner short-circuits: since runner-main-thread-p returns T,
+submit-to-main-thread calls execute directly (no queue needed)."
+  (unless *test-runner*
+    (setf *test-runner* (make-instance 'test-runner)))
+  (setf rs-internals:*runner* *test-runner*))
+
+(defmacro with-test-runner (&body body)
+  "Bind *runner* to a test runner for the duration of BODY."
+  `(let ((rs-internals:*runner* (or *test-runner*
+                                     (make-instance 'test-runner))))
+     ,@body))
 
 ;;; ============================================================================
 ;;; Test Fixtures

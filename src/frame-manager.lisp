@@ -3,9 +3,16 @@
 ;;;; The frame manager handles adoption/disowning of application frames.
 ;;;; It works with the render-stack port to manage frame lifecycles.
 ;;;;
-;;;; Also defines RENDER-STACK-FRAME-MIXIN — include this in application
-;;;; frame classes to get automatic runner bootstrap when run-frame-top-level
-;;;; is called. Without it, the application must pre-bind *runner* manually.
+;;;; Transparent bootstrap: a run-frame-top-level :around on application-frame
+;;;; lazily starts the main-thread-runner when needed. After setting
+;;;;   (setf clim:*default-server-path* '(:render-stack))
+;;;; any standard CLIM application (run-frame-top-level ...) works without
+;;;; any frame class modification.
+;;;;
+;;;; RENDER-STACK-FRAME-MIXIN remains available as an explicit alternative
+;;;; for applications that want to declare the backend dependency in the
+;;;; frame class, or for expert runners that pre-bind *runner* before
+;;;; run-frame-top-level is called.
 
 (in-package :mcclim-render-stack)
 
@@ -40,32 +47,24 @@
 (defclass render-stack-frame-mixin ()
   ()
   (:documentation
-   "Mixin for CLIM application frames using the render-stack backend.
+   "Optional mixin for CLIM application frames using the render-stack backend.
 
-Include in your frame class to enable automatic runner bootstrap:
+NOTE: As of the transparent bootstrap refactor, this mixin is no longer
+required. Standard CLIM applications work without it — see the
+run-frame-top-level :around on application-frame below.
+
+Use this mixin when you want to explicitly declare the backend dependency
+in your frame class, or when the runner must be bootstrapped BEFORE frame
+adoption (e.g., expert runners that pre-configure phases):
 
   (clim:define-application-frame my-app (render-stack-frame-mixin)
     ...)
 
-When RUN-FRAME-TOP-LEVEL is called, this mixin arranges for the
-render-stack main-thread-runner to own the OS main thread, with the
-CLIM event loop in the appropriate thread.
-
-Two startup modes are handled transparently:
-
-  Case A — called from the OS main thread (standalone app, sbcl --load):
-    The runner loop is started on this thread. The CLIM event loop runs
-    in a spawned background thread. RUN-FRAME-TOP-LEVEL returns when the
-    CLIM event loop exits (which also stops the runner).
-
-  Case B — called from a worker thread (SLIME/Emacs, async evaluation):
-    The OS main thread is interrupted and starts the runner loop there.
-    The CLIM event loop continues on the calling (worker) thread.
-    RUN-FRAME-TOP-LEVEL returns when the CLIM event loop exits.
-
-In both cases, port initialization dispatches SDL3/GL work to the main
-thread via the runner's task queue, so the OS main thread constraint is
-satisfied without any additional application-level plumbing.
+When RUN-FRAME-TOP-LEVEL is called, this mixin sets *RUNNER* before
+standard-application-frame :around runs (before adoption/port creation),
+so SDL3 init happens during initialize-instance :after rather than being
+deferred. The transparent application-frame :around detects the runner is
+already active and passes through.
 
 If RS-INTERNALS:*RUNNER* is already bound and :RUNNING when
 RUN-FRAME-TOP-LEVEL is called, the mixin does nothing (expert mode)."))
@@ -159,6 +158,71 @@ it depending on the calling thread:
                                              (lambda () (call-next-method))))))
 
       ;; Runner exists but is stopped/stopping — don't touch it (expert cleanup).
+      (t
+       (call-next-method)))))
+
+;;; -----------------------------------------------------------------------
+;;; run-frame-top-level :around — transparent bootstrap (no mixin required)
+;;; -----------------------------------------------------------------------
+
+(defmethod clim:run-frame-top-level :around
+    ((frame clim:application-frame) &rest keys)
+  "Transparent runner bootstrap for any render-stack application frame.
+
+Fires AFTER standard-application-frame :around (which does adoption and
+port creation), so the port exists when this method executes.
+
+Passes through immediately when:
+  - The port is not a render-stack port (other backends, tests).
+  - *RUNNER* is already active (mixin or expert already bootstrapped it).
+
+Otherwise lazily bootstraps the runner, depending on the calling thread:
+
+  Case A — OS main thread (standalone app, sbcl --load):
+    SDL3 initialized directly here (we ARE the main thread).
+    Event loop spawned in a background thread.
+    RUNNER-RUN blocks this thread until the app exits.
+
+  Case B — worker thread (SLIME/Emacs, async evaluation):
+    Runner started on OS main thread via RUN-RUNNER-ON-MAIN-THREAD.
+    SDL3 initialized via SUBMIT-TO-MAIN-THREAD (runner is live by then).
+    Event loop runs on this (worker) thread.
+
+In both cases RUN-FRAME-TOP-LEVEL returns when the event loop exits."
+  (declare (ignore keys))
+  ;; Pass-through: not a render-stack port (other backends, unit tests, etc).
+  (unless (typep (clim:frame-port frame) 'render-stack-port)
+    (return-from clim:run-frame-top-level (call-next-method)))
+  (let ((existing-runner rs-internals:*runner*))
+    (cond
+      ;; Runner already active — mixin or expert bootstrapped it; pass through.
+      ((and existing-runner
+            (member (rs-internals:runner-state existing-runner)
+                    '(:starting :running)))
+       (call-next-method))
+
+      ;; No runner — transparent lazy bootstrap.
+      ((null existing-runner)
+       (let ((new-runner (make-instance 'rs-internals:main-thread-runner))
+             (port (clim:frame-port frame)))
+         (setf rs-internals:*runner* new-runner)
+         (if (eq (bt2:current-thread) (rs-internals:find-main-thread))
+             ;; Case A: on OS main thread.
+             ;; Call %port-init-sdl3 directly (we are the main thread).
+             ;; Then trampoline: event loop in background, runner-run blocks here.
+             (progn
+               (%port-init-sdl3 port)
+               (%bootstrap-runner-main-thread new-runner
+                                             (lambda () (call-next-method))))
+             ;; Case B: on a worker thread (e.g., SLIME).
+             ;; Start runner on main thread first (makes submit-to-main-thread safe),
+             ;; then dispatch SDL3 init via submit, then run event loop here.
+             (%bootstrap-runner-worker-thread new-runner
+                                             (lambda ()
+                                               (%port-init-sdl3 port)
+                                               (call-next-method))))))
+
+      ;; Runner exists but not active — pass through (expert cleanup path).
       (t
        (call-next-method)))))
 

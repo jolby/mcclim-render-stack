@@ -5,7 +5,7 @@
                     (:rs-host :render-stack-host)
                     (:rs-sdl3 :render-stack-sdl3)
                     (:rs-internals :render-stack-internals)
-                    (:bt2 :bordeaux-threads))
+                    (:log :org.shirakumo.verbose))
   (:import-from :climi
                 #:standard-pointer
                 #:pointer-sheet

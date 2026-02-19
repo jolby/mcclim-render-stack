@@ -239,4 +239,4 @@ In both cases RUN-FRAME-TOP-LEVEL returns when the event loop exits."
 (defun initialize-render-stack ()
   "Initialize the render-stack backend.
    Call this before using the :render-stack server path."
-  (log:info "render-stack backend initialized"))
+  (log:info :frame-manager "render-stack backend initialized"))

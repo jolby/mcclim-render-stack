@@ -73,7 +73,13 @@ Event Flow:
   
   ;; Initialize typography context (doesn't need SDL3)
   (setf (port-typography-context port) (frs:make-typography-context))
-  
+
+  ;; Register this thread as the UI/CLIM event loop thread.
+  ;; Port creation always happens on the UI thread (the bg thread in Case A,
+  ;; the worker thread in Case B). Required for assert-ui-thread in begin-frame.
+  (unless rs-internals:*ui-thread*
+    (rs-internals:register-ui-thread))
+
   ;; Assert multiprocessing mode (required for concurrent-queue)
   (assert clim-sys:*multiprocessing-p* ()
           "render-stack-port requires multiprocessing (concurrent-queue)")
@@ -96,7 +102,20 @@ Event Flow:
         (rs-internals:submit-to-main-thread rs-internals:*runner*
           #'init-on-main-thread
           :blocking t
-          :tag :mcclim-port-init))))
+          :tag :mcclim-port-init)))
+
+  ;; After the global engine and delegate are initialized, inject the CLIM
+  ;; runner phases if the runner was started without phases (transparent
+  ;; bootstrap case). Expert runners that pre-configure their own phases
+  ;; are left untouched.
+  (when (and rs-internals:*runner*
+             (null (rs-internals:runner-phases rs-internals:*runner*)))
+    (rs-internals:submit-to-main-thread rs-internals:*runner*
+      (lambda ()
+        (setf (rs-internals:runner-phases rs-internals:*runner*)
+              (make-clim-runner-phases)))
+      :blocking t
+      :tag :inject-clim-runner-phases)))
 
 ;;; ============================================================================
 ;;; NOTE: main-thread-loop has been replaced by runner phases.
@@ -161,7 +180,17 @@ Event Flow:
         (push port (delegate-dirty-ports *global-delegate*))))
     ;; Clear local flag
     (setf (port-needs-redraw-p port) nil))
-  
+
+  ;; Drive the engine tick when a frame is pending.
+  ;; render-engine-tick calls begin-frame (builds display lists for dirty ports)
+  ;; then pipeline-produce to hand the frame to the main thread for rasterization.
+  ;; Must be called on the UI thread (asserted inside begin-frame).
+  (when (and *global-engine*
+             (render-stack:render-engine-running-p *global-engine*)
+             (render-stack:frame-clock-frame-pending-p
+              (render-stack:render-engine-clock *global-engine*)))
+    (render-stack:render-engine-tick *global-engine*))
+
   ;; Events arrive asynchronously from main thread.
   ;; Briefly yield to allow event delivery.
   ;; The concurrent-queue's condition-wait is the real blocking mechanism.

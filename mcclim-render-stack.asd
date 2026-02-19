@@ -8,7 +8,7 @@
                :render-stack-sdl3
                :flutter-render-stack
                :alexandria
-               :log4cl
+               :verbose
                :bordeaux-threads)
   :components ((:module "src"
                  :components ((:file "package")
@@ -17,7 +17,8 @@
                               (:file "runner-phases" :depends-on ("package" "multi-window-delegate" "globals"))
                               (:file "pointer" :depends-on ("package"))
                               (:file "port" :depends-on ("package" "pointer" "multi-window-delegate" "globals" "runner-phases"))
-                              (:file "medium" :depends-on ("port"))
+                              (:file "render-delegate" :depends-on ("port"))
+                              (:file "medium" :depends-on ("port" "render-delegate"))
                               (:file "graft" :depends-on ("port"))
                               (:file "frame-manager" :depends-on ("graft"))
                               )))

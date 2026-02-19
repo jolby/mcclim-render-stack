@@ -70,9 +70,11 @@ No time budget — we always render the frame we have."))
       (pipeline-try-consume
        (render-engine-pipeline (clim-render-phase-engine phase)))
     (when got-it
+      (format *error-output* "~&[DIAG] clim-render-phase: consumed frame from pipeline~%")
       (handler-case
           (render-delegate-draw (clim-render-phase-delegate phase) item)
         (error (e)
+          (format *error-output* "~&[DIAG] Error in delegate-draw: ~A~%" e)
           (log:debug :clim-render-phase "Error in delegate-draw: ~A~%" e)
           (log:error :mcclim-render-stack "Error in delegate-draw: ~A" e))))))
 

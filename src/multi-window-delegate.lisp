@@ -127,19 +127,20 @@ The delegate implements the render-stack RENDER-DELEGATE protocol:
 ;;; Task 1.4: Render-Delegate Protocol Methods
 ;;; ============================================================================
 
-(defmethod render-stack:render-delegate-begin-frame 
+(defmethod render-stack:render-delegate-begin-frame
     ((delegate multi-window-render-delegate) target-time frame-number)
   "Called at frame start on UI thread. Build display lists for dirty ports.
-   
+
    Thread Contract: MUST be called on UI thread."
   (rs-internals:assert-ui-thread render-delegate-begin-frame)
-  
+  (format *error-output* "~&[DIAG] render-delegate-begin-frame: frame ~A~%" frame-number)
   ;; Build display lists for all dirty ports
   (let ((dirty-ports nil))
     ;; Atomically grab and clear dirty list
     (bt2:with-lock-held ((delegate-dirty-lock delegate))
       (setf dirty-ports (delegate-dirty-ports delegate))
       (setf (delegate-dirty-ports delegate) nil))
+    (format *error-output* "~&[DIAG] begin-frame: dirty-ports=~A~%" dirty-ports)
     
     ;; Build display lists
     (dolist (port dirty-ports)
@@ -185,12 +186,11 @@ The delegate implements the render-stack RENDER-DELEGATE protocol:
 (defmethod render-stack:render-delegate-draw
     ((delegate multi-window-render-delegate) pipeline-item)
   "Called on main/raster thread to render. This is where ALL Impeller work happens.
-   
-   NOTE: This is a SECONDARY drain point (belt-and-suspenders). The PRIMARY event
-   drain is in the port's main-thread-loop which calls drain-sdl3-events directly.
-   
+
    Thread Contract: MUST be called on main thread (SDL3/GL requirement)."
   (rs-internals:assert-main-thread render-delegate-draw)
+  (format *error-output* "~&[DIAG] render-delegate-draw: entered, window-table size=~A~%"
+          (hash-table-count (delegate-window-table delegate)))
   
   ;; Secondary drain - events already drained in main-thread-loop, but this ensures
   ;; events are fresh when a frame IS being drawn
@@ -266,9 +266,11 @@ The delegate implements the render-stack RENDER-DELEGATE protocol:
 
 (defun draw-test-pattern-for-port (port)
   "Draw a simple test pattern for a port.
-   
+
    Thread Contract: MUST be called on main thread."
   (rs-internals:assert-main-thread draw-test-pattern-for-port)
+  (format *error-output* "~&[DIAG] draw-test-pattern-for-port: ctx=~A~%"
+          *global-impeller-context*)
   
   ;; Get window dimensions
   (let* ((window (port-window port))

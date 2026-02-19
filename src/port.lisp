@@ -173,6 +173,7 @@ Event Flow:
   ;; Signal engine if this port needs a frame
   ;; This is non-blocking - just sets a flag in the engine
   (when (port-needs-redraw-p port)
+    (format *error-output* "~&[DIAG] process-next-event: port-needs-redraw, requesting frame~%")
     (render-stack:render-engine-request-frame *global-engine*)
     ;; Mark port as dirty in delegate
     (bt2:with-lock-held ((delegate-dirty-lock *global-delegate*))
@@ -189,6 +190,7 @@ Event Flow:
              (render-stack:render-engine-running-p *global-engine*)
              (render-stack:frame-clock-frame-pending-p
               (render-stack:render-engine-clock *global-engine*)))
+    (format *error-output* "~&[DIAG] process-next-event: calling render-engine-tick~%")
     (render-stack:render-engine-tick *global-engine*))
 
   ;; Events arrive asynchronously from main thread.

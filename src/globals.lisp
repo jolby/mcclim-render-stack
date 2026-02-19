@@ -50,11 +50,13 @@
    Thread Contract: MUST be called on main thread."
   (rs-internals:assert-main-thread initialize-global-impeller-context)
   (unless *global-impeller-context*
+    (format *error-output* "~&[DIAG] initialize-global-impeller-context: creating context~%")
     (log:info :mcclim-render-stack "Creating global Impeller GL context")
     (setf *global-impeller-context*
           (rs-internals:without-float-traps
             (frs:make-context :gl-proc-address-callback
                               (cffi:callback sdl3-gl-proc-getter))))
+    (format *error-output* "~&[DIAG] Impeller context result: ~A~%" *global-impeller-context*)
     (log:info :mcclim-render-stack "Global Impeller GL context created: ~A"
               *global-impeller-context*)))
 

@@ -17,7 +17,6 @@
                               (:file "runner-phases" :depends-on ("package" "multi-window-delegate" "globals"))
                               (:file "pointer" :depends-on ("package"))
                               (:file "port" :depends-on ("package" "pointer" "multi-window-delegate" "globals" "runner-phases"))
-                              (:file "render-delegate" :depends-on ("port"))
                               (:file "medium" :depends-on ("port" "render-delegate"))
                               (:file "graft" :depends-on ("port"))
                               (:file "frame-manager" :depends-on ("graft"))

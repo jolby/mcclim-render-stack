@@ -22,6 +22,42 @@
   "T if global engine has been initialized.
    Thread-safe: Set once during initialization.")
 
+(defvar *global-impeller-context* nil
+  "The global Impeller GL rendering context.
+   Created on the main thread after the first SDL3 GL context is made current.
+   Must be created with frs:make-context + SDL3 GL proc address callback.
+   Thread-safe: Read-only after initialization.")
+
+;;; ============================================================================
+;;; Impeller Context Management
+;;; ============================================================================
+
+;;; GL proc address callback for Impeller context creation.
+;;; SDL3 provides the proc getter; we register it as a CFFI callback so
+;;; Impeller can resolve OpenGL ES entry points at context creation time.
+(cffi:defcallback sdl3-gl-proc-getter :pointer
+    ((proc-name :string) (user-data :pointer))
+  (declare (ignore user-data))
+  (%sdl3:gl-get-proc-address proc-name))
+
+(defun initialize-global-impeller-context ()
+  "Create the global Impeller GL rendering context.
+
+   MUST be called on the main thread after an SDL3 GL context has been made
+   current (i.e., after rs-sdl3:make-sdl3-window has run on the main thread).
+   Idempotent: safe to call multiple times.
+
+   Thread Contract: MUST be called on main thread."
+  (rs-internals:assert-main-thread initialize-global-impeller-context)
+  (unless *global-impeller-context*
+    (log:info :mcclim-render-stack "Creating global Impeller GL context")
+    (setf *global-impeller-context*
+          (rs-internals:without-float-traps
+            (frs:make-context :gl-proc-address-callback
+                              (cffi:callback sdl3-gl-proc-getter))))
+    (log:info :mcclim-render-stack "Global Impeller GL context created: ~A"
+              *global-impeller-context*)))
+
 ;;; ============================================================================
 ;;; Global Engine Management
 ;;; ============================================================================
@@ -63,10 +99,15 @@
     (when *global-engine*
       (render-stack:render-engine-stop *global-engine*)
       (setf *global-engine* nil))
-    
+
+    (when *global-impeller-context*
+      (rs-internals:without-float-traps
+        (frs:release-context *global-impeller-context*))
+      (setf *global-impeller-context* nil))
+
     (setf *global-delegate* nil)
     (setf *global-engine-initialized* nil)
-    
+
     (log:info :mcclim-render-stack "Global render engine shutdown complete")))
 
 ;;; ============================================================================
@@ -79,4 +120,5 @@
    Thread Contract: SHOULD be called on main thread."
   (setf *global-engine* nil
         *global-delegate* nil
-        *global-engine-initialized* nil))
+        *global-engine-initialized* nil
+        *global-impeller-context* nil))

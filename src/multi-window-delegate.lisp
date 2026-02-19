@@ -297,7 +297,8 @@ The delegate implements the render-stack RENDER-DELEGATE protocol:
       ;; Execute
       (let ((surface (get-port-surface port)))
         (when surface
-          (frs:execute-display-list surface builder))))))
+          (rs-internals:without-float-traps
+            (frs:execute-display-list surface builder)))))))
 
 (defun swap-all-window-buffers (delegate)
   "Swap GL buffers for all windows.
@@ -317,24 +318,20 @@ The delegate implements the render-stack RENDER-DELEGATE protocol:
 ;;; Helper to get/create Impeller surface for a port
 (defun get-port-surface (port)
   "Get or create the Impeller surface for a port.
-   
+   Uses the global Impeller GL context created in globals.lisp.
+
    Thread Contract: MUST be called on main thread."
   (rs-internals:assert-main-thread get-port-surface)
-  
-  ;; For now, we need to get the surface from the port's delegate
-  ;; This is a placeholder - in the full implementation, the port would
-  ;; manage its own surface
-  (let ((window (port-window port)))
-    (when window
-      ;; Create surface on demand - in Phase 2, this would be cached
+  (let ((window (port-window port))
+        (ctx *global-impeller-context*))
+    (when (and window ctx)
       (let ((width (rs-host:framebuffer-width window))
             (height (rs-host:framebuffer-height window)))
-        ;; Return a wrapped FBO surface
-        ;; Note: In full implementation, we'd cache this per-port
-        (frs:make-wrapped-fbo-surface 
-         (or (get-typography-context) (frs:make-typography-context))
-         0  ; FBO 0 = default framebuffer
-         width height)))))
+        ;; Create a wrapped FBO surface for the default framebuffer (FBO 0).
+        ;; Note: In a later phase, this would be cached per-port and
+        ;; released with frs:release-surface after use.
+        (rs-internals:without-float-traps
+          (frs:make-wrapped-fbo-surface ctx 0 width height))))))
 
 (defun get-typography-context ()
   "Get the global typography context, creating if needed.

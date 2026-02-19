@@ -73,6 +73,7 @@ No time budget — we always render the frame we have."))
       (handler-case
           (render-delegate-draw (clim-render-phase-delegate phase) item)
         (error (e)
+          (log:debug :clim-render-phase "Error in delegate-draw: ~A~%" e)
           (log:error :mcclim-render-stack "Error in delegate-draw: ~A" e))))))
 
 (defun make-clim-render-phase (engine delegate)

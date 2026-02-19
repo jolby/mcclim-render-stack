@@ -240,13 +240,22 @@ Event Flow:
       (setf (port-window port) window
             (port-gl-context port) (rs-sdl3::sdl3-window-gl-context window)
             (port-window-id port) window-id)
-      
+
+      ;; Create the global Impeller GL context on the main thread now that an
+      ;; SDL3 GL context is current.  Idempotent — skipped for subsequent windows.
+      (unless *global-impeller-context*
+        (rs-internals:submit-to-main-thread rs-internals:*runner*
+          (lambda ()
+            (initialize-global-impeller-context))
+          :blocking t
+          :tag :create-impeller-context))
+
       ;; Register with global delegate
       (register-port-with-delegate *global-delegate* port window-id)
-      
+
       ;; Store sheet in window table for event lookup
       (setf (gethash window (port-window-table port)) sheet)
-      
+
       ;; Create mirror
       (make-instance 'render-stack-mirror
                      :sdl-window window))))

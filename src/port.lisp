@@ -151,17 +151,20 @@ Event Flow:
       (rs-sdl3:destroy-sdl3-window window))
     (setf (port-window port) nil)))
 
-(defmethod process-next-event ((port render-stack-port) 
+(defmethod process-next-event ((port render-stack-port)
                                &key wait-function (timeout 0.016))
   "Process-next-event for render-stack port.
-   
+
    In our architecture, runner phases push events via distribute-event
    from the clim-event-drain-phase. Frame threads consume from per-sheet
    concurrent-queues. This method satisfies the McCLIM protocol contract.
-   
+
    Returns: (values NIL :wait-function) if wait-function fires,
             (values NIL :timeout) otherwise."
-  
+
+  ;; Diagnostic: confirm whether McCLIM's event loop ever calls this method
+  (format *error-output* "~&[DIAG] process-next-event: ENTERED~%")
+
   ;; Check quit flag
   (when (port-quit-requested port)
     (return-from process-next-event nil))

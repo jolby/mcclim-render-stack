@@ -69,14 +69,41 @@ No time budget — we always render the frame we have."))
   (multiple-value-bind (item got-it)
       (pipeline-try-consume
        (render-engine-pipeline (clim-render-phase-engine phase)))
-    (when got-it
-      (format *error-output* "~&[DIAG] clim-render-phase: consumed frame from pipeline~%")
-      (handler-case
-          (render-delegate-draw (clim-render-phase-delegate phase) item)
-        (error (e)
-          (format *error-output* "~&[DIAG] Error in delegate-draw: ~A~%" e)
-          (log:debug :clim-render-phase "Error in delegate-draw: ~A~%" e)
-          (log:error :mcclim-render-stack "Error in delegate-draw: ~A" e))))))
+    (cond
+      ;; Normal pipeline path: a frame was produced by render-engine-tick on the UI thread.
+      (got-it
+       (format *error-output* "~&[DIAG] clim-render-phase: consumed frame from pipeline~%")
+       (handler-case
+           (render-delegate-draw (clim-render-phase-delegate phase) item)
+         (error (e)
+           (format *error-output* "~&[DIAG] Error in delegate-draw: ~A~%" e)
+           (log:debug :clim-render-phase "Error in delegate-draw: ~A~%" e)
+           (log:error :mcclim-render-stack "Error in delegate-draw: ~A" e))))
+
+      ;; Fallback: direct render when pipeline is empty.
+      ;; McCLIM's event loop may not call process-next-event in all paths
+      ;; (it can block directly on the concurrent-queue via distribute-event),
+      ;; so render-engine-tick may never be driven from the UI side.
+      ;; This fallback renders directly without the pipeline so we can at
+      ;; least confirm the Impeller path works end-to-end.
+      (t
+       (let ((delegate (clim-render-phase-delegate phase)))
+         (when (and *global-impeller-context*
+                    (plusp (hash-table-count (delegate-window-table delegate))))
+           ;; Snapshot the port list while holding the lock, then render without lock.
+           (let ((ports nil))
+             (bt2:with-lock-held ((delegate-table-lock delegate))
+               (maphash (lambda (window-id port)
+                          (declare (ignore window-id))
+                          (push port ports))
+                        (delegate-window-table delegate)))
+             (handler-case
+                 (progn
+                   (dolist (port ports)
+                     (draw-test-pattern-for-port port))
+                   (swap-all-window-buffers delegate))
+               (error (e)
+                 (format *error-output* "~&[DIAG] Error in direct render: ~A~%" e))))))))))
 
 (defun make-clim-render-phase (engine delegate)
   "Create a CLIM-RENDER-PHASE for ENGINE and DELEGATE.

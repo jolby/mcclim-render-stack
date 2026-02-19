@@ -269,8 +269,6 @@ The delegate implements the render-stack RENDER-DELEGATE protocol:
 
    Thread Contract: MUST be called on main thread."
   (rs-internals:assert-main-thread draw-test-pattern-for-port)
-  (format *error-output* "~&[DIAG] draw-test-pattern-for-port: ctx=~A~%"
-          *global-impeller-context*)
   
   ;; Get window dimensions
   (let* ((window (port-window port))

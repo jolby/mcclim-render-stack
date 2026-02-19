@@ -68,11 +68,13 @@
       (setf (medium-paint medium) (frs:make-paint))))
 
 (defun %get-medium-builder (medium)
-  "Get the current display list builder from the port's delegate.
-   Returns nil if not currently in a frame (shouldn't happen in normal use)."
-  (let* ((port (port medium))
-         (delegate (when port (port-delegate port))))
-    (get-delegate-current-builder delegate)))
+  "Get the current display list builder from the port's runtime.
+    Returns nil if not currently in a frame (shouldn't happen in normal use).
+    
+    Phase 1: Stub — returns nil. Phase 2 will implement display list construction."
+   (declare (ignore medium))
+   ;; TODO: Implement display list builder acquisition from runtime
+   nil)
 
 ;;; CLIM Internal Functions
 
@@ -397,13 +399,13 @@
    align-y: :top, :center, :baseline, :bottom
 
    toward-x/y and transform-glyphs are ignored in Phase 2."
-  (declare (ignore toward-x toward-y transform-glyphs))
-  (let* ((builder (%get-medium-builder medium))
-         (port (port medium)))
-    (when builder
-      (let* ((text-style (medium-text-style medium))
-             (substr (subseq string (or start 0) (or end (length string))))
-             (typo-ctx (port-typography-context port))
+   (declare (ignore toward-x toward-y transform-glyphs))
+   (let* ((builder (%get-medium-builder medium))
+          (port (port medium)))
+     (when builder
+       (let* ((text-style (medium-text-style medium))
+              (substr (subseq string (or start 0) (or end (length string))))
+              (typo-ctx (runtime-typography-context (port-runtime port)))
              (paint (%get-medium-paint medium))
              (style (frs:make-paragraph-style)))
         (unwind-protect
@@ -521,10 +523,10 @@
 ;;; These methods provide text measurement for layout calculations
 
 (defun %text-style-to-paragraph-metrics (text-style medium string)
-  "Create a paragraph from text-style and string, return metrics.
-   Returns (values height baseline width)."
-  (let* ((port (port medium))
-         (typo-ctx (port-typography-context port))
+   "Create a paragraph from text-style and string, return metrics.
+    Returns (values height baseline width)."
+   (let* ((port (port medium))
+          (typo-ctx (runtime-typography-context (port-runtime port)))
          (paint (%get-medium-paint medium))
          (style (frs:make-paragraph-style)))
     (unwind-protect
@@ -601,7 +603,7 @@
   (let* ((text-style (or text-style (medium-text-style medium)))
          (substr (subseq string start (or end (length string))))
          (port (port medium))
-         (typo-ctx (port-typography-context port))
+         (typo-ctx (runtime-typography-context (port-runtime port)))
          (paint (%get-medium-paint medium))
          (style (frs:make-paragraph-style)))
     (unwind-protect

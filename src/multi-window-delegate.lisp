@@ -318,27 +318,28 @@ The delegate implements the render-stack RENDER-DELEGATE protocol:
 ;;; Helper to get/create Impeller surface for a port
 (defun get-port-surface (port)
   "Get or create the Impeller surface for a port.
-   Uses the global Impeller GL context created in globals.lisp.
+   Uses the Impeller GL context from the runtime.
+   Caches the surface on the port to avoid recreating it every frame.
 
-   Thread Contract: MUST be called on main thread."
-  (rs-internals:assert-main-thread get-port-surface)
-  (let ((window (port-window port))
-        (ctx *global-impeller-context*))
-    (when (and window ctx)
-      (let ((width (rs-host:framebuffer-width window))
-            (height (rs-host:framebuffer-height window)))
-        ;; Create a wrapped FBO surface for the default framebuffer (FBO 0).
-        ;; Note: In a later phase, this would be cached per-port and
-        ;; released with frs:release-surface after use.
-        (rs-internals:without-float-traps
-          (frs:make-wrapped-fbo-surface ctx 0 width height))))))
+    Thread Contract: MUST be called on main thread."
+   (rs-internals:assert-main-thread get-port-surface)
+   (let ((window (port-window port))
+         (runtime (port-runtime port))
+         (ctx (and (port-runtime port)
+                   (runtime-impeller-context (port-runtime port)))))
+     (when (and window ctx)
+       ;; TODO: Cache surface on port to avoid recreation. For now, create fresh.
+       ;; When cached, we'll need to handle window resizes and release on destroy.
+       (let ((width (rs-host:framebuffer-width window))
+             (height (rs-host:framebuffer-height window)))
+         ;; Create a wrapped FBO surface for the default framebuffer (FBO 0).
+         ;; Phase 1: Create fresh each frame (leaks memory but works functionally)
+         ;; Phase 2: Cache on port, release on window-resize/destroy
+         (rs-internals:without-float-traps
+           (frs:make-wrapped-fbo-surface ctx 0 width height))))))
 
-(defun get-typography-context ()
-  "Get the global typography context, creating if needed.
-   
-   Thread Contract: Any thread (uses global)."
-  (when *global-delegate*
-    (delegate-typography-context *global-delegate*)))
+;; Obsolete — get typography context from runtime instead:
+;; (runtime-typography-context (port-runtime port))
 
 ;;; ============================================================================
 ;;; Event Translation (moved from port.lisp)

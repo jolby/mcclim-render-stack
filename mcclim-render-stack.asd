@@ -11,16 +11,17 @@
                :verbose
                :bordeaux-threads)
   :components ((:module "src"
-                 :components ((:file "package")
-                              (:file "multi-window-delegate" :depends-on ("package"))
-                              (:file "globals" :depends-on ("package" "multi-window-delegate"))
-                              (:file "runner-phases" :depends-on ("package" "multi-window-delegate" "globals"))
-                              (:file "pointer" :depends-on ("package"))
-                              (:file "port" :depends-on ("package" "pointer" "multi-window-delegate" "globals" "runner-phases"))
-                              (:file "medium" :depends-on ("port" "render-delegate"))
-                              (:file "graft" :depends-on ("port"))
-                              (:file "frame-manager" :depends-on ("graft"))
-                              )))
+                  :components ((:file "package")
+                               (:file "runtime" :depends-on ("package"))
+                               (:file "multi-window-delegate" :depends-on ("package"))
+                               (:file "globals" :depends-on ("package" "multi-window-delegate"))
+                               (:file "runner-phases" :depends-on ("package" "multi-window-delegate" "globals" "runtime"))
+                               (:file "pointer" :depends-on ("package"))
+                               (:file "port" :depends-on ("package" "pointer" "multi-window-delegate" "globals" "runner-phases" "runtime"))
+                               (:file "medium" :depends-on ("port"))
+                               (:file "graft" :depends-on ("port"))
+                               (:file "frame-manager" :depends-on ("graft"))
+                               )))
   :in-order-to ((asdf:test-op (asdf:test-op "mcclim-render-stack/tests"))))
 
 (asdf:defsystem :mcclim-render-stack/tests

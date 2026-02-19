@@ -11,107 +11,137 @@
 ;;; -----------------------------------------------------------------------
 
 (defclass clim-event-drain-phase (rs-internals:budgeted-runner-phase)
-  ((delegate :initarg :delegate
-             :reader clim-event-drain-phase-delegate
-             :type multi-window-render-delegate
-             :documentation
-             "The MULTI-WINDOW-RENDER-DELEGATE that owns event routing.
-Calls DRAIN-SDL3-EVENTS which polls SDL3, translates events, and
-distributes them to McCLIM sheet queues via DISTRIBUTE-EVENT."))
+  ((port :initarg :port
+         :reader clim-event-drain-phase-port
+         :type render-stack-port
+         :documentation
+         "The RENDER-STACK-PORT managing the runtime.
+Drains SDL3 events and distributes them to McCLIM sheet queues."))
   (:documentation
-   "Runner phase that drains SDL3 events through the McCLIM delegate.
+   "Runner phase that drains SDL3 events through the McCLIM port.
 
-Each iteration calls DRAIN-SDL3-EVENTS on the delegate, which polls
-the SDL3 event queue, translates raw events into McCLIM event objects,
-and routes them to the appropriate sheet queues.
+Each iteration calls DRAIN-SDL3-EVENTS, which polls the SDL3 event queue,
+translates raw events into McCLIM event objects, and routes them to the
+appropriate sheet queues via the port's runtime registry.
 
 Configure with a time budget to prevent event bursts from starving
 the render phase:
-  (make-clim-event-drain-phase delegate :time-budget-ms 4.0)"))
+  (make-clim-event-drain-phase port :time-budget-ms 4.0)"))
 
 (defmethod rs-internals:run-phase ((phase clim-event-drain-phase) runner)
   (declare (ignore runner))
-  (drain-sdl3-events (clim-event-drain-phase-delegate phase)))
+  (let ((port (clim-event-drain-phase-port phase)))
+    (drain-sdl3-events-for-port port)
+    ;; Safety net: if quit was requested but frame-exit hasn't been called after
+    ;; the event drain, forcefully stop the runner. This handles cases where the
+    ;; focused pane doesn't have a handler for the quit event.
+    (when (port-quit-requested port)
+      (log:info :mcclim-render-stack "Quit requested, stopping runner")
+      (rs-internals:runner-stop runner))))
 
-(defun make-clim-event-drain-phase (delegate &key (time-budget-ms 4.0))
-  "Create a CLIM-EVENT-DRAIN-PHASE for DELEGATE.
+(defun drain-sdl3-events-for-port (port)
+  "Poll SDL3 events and route them through the port.
+Translates raw SDL3 events into McCLIM events and distributes them
+via DISTRIBUTE-EVENT to McCLIM's per-sheet concurrent-queue.
+
+Thread Contract: MUST be called on main thread."
+  (rs-internals:assert-main-thread drain-sdl3-events-for-port)
+  (let ((runtime (port-runtime port)))
+    (rs-sdl3:with-sdl3-event (ev)
+      (loop while (rs-sdl3:poll-event ev)
+            do (let* ((event-type (rs-sdl3:get-event-type ev))
+                      (window-id (get-window-id-from-sdl3-event ev event-type)))
+                 ;; Route event: if window-id matches a registered window, translate and distribute.
+                 ;; For events without window-id (e.g. :quit), use the port directly.
+                 (cond
+                   ;; Global quit event — no window-id
+                   ((eq event-type :quit)
+                    (setf (port-quit-requested port) t))
+                   ;; Window-specific event
+                   (window-id
+                    (let ((sheet (find-sheet-for-window runtime window-id)))
+                      (when sheet
+                        (let ((clim-event (translate-sdl3-event port ev)))
+                          (when clim-event
+                            (distribute-event port clim-event)))))))))))
+
+(defun make-clim-event-drain-phase (port &key (time-budget-ms 4.0))
+  "Create a CLIM-EVENT-DRAIN-PHASE for PORT.
 
 Arguments:
-  DELEGATE       — a MULTI-WINDOW-RENDER-DELEGATE instance
-  TIME-BUDGET-MS — milliseconds to spend draining events per iteration (default 4ms)"
-  (make-instance 'clim-event-drain-phase
-                 :name :drain-clim-events
-                 :time-budget-itu (rs-internals:itu-from-milliseconds time-budget-ms)
-                 :delegate delegate))
+   PORT           — a RENDER-STACK-PORT instance
+   TIME-BUDGET-MS — milliseconds to spend draining events per iteration (default 4ms)"
+   (make-instance 'clim-event-drain-phase
+                  :name :drain-clim-events
+                  :time-budget-itu (rs-internals:itu-from-milliseconds time-budget-ms)
+                  :port port))
 
 ;;; -----------------------------------------------------------------------
 ;;; CLIM render phase
 ;;; -----------------------------------------------------------------------
 
 (defclass clim-render-phase (rs-internals:runner-phase)
-  ((engine   :initarg :engine
-             :reader clim-render-phase-engine
-             :documentation "The RENDER-ENGINE instance to consume frames from.")
-   (delegate :initarg :delegate
-             :reader clim-render-phase-delegate
-             :documentation "The MULTI-WINDOW-RENDER-DELEGATE for rasterization."))
+  ((port :initarg :port
+         :reader clim-render-phase-port
+         :type render-stack-port
+         :documentation "The RENDER-STACK-PORT managing the engine and runtime.")
+   (last-render-time :accessor clim-render-phase-last-render-time
+                     :initform 0
+                     :documentation "Internal-real-time of last fallback render, for throttling."))
   (:documentation
    "Runner phase that does non-blocking consume-and-draw for McCLIM.
 
 Each iteration attempts a non-blocking PIPELINE-TRY-CONSUME on the
 engine's pipeline. When a frame is ready, calls RENDER-DELEGATE-DRAW
-on the delegate. Errors during drawing are logged, not propagated.
+on the runtime (which IS the delegate). Errors during drawing are 
+logged, not propagated.
 
 No time budget — we always render the frame we have."))
 
 (defmethod rs-internals:run-phase ((phase clim-render-phase) runner)
   (declare (ignore runner))
-  (multiple-value-bind (item got-it)
-      (pipeline-try-consume
-       (render-engine-pipeline (clim-render-phase-engine phase)))
-    (cond
-      ;; Normal pipeline path: a frame was produced by render-engine-tick on the UI thread.
-      (got-it
-       (format *error-output* "~&[DIAG] clim-render-phase: consumed frame from pipeline~%")
-       (handler-case
-           (render-delegate-draw (clim-render-phase-delegate phase) item)
-         (error (e)
-           (format *error-output* "~&[DIAG] Error in delegate-draw: ~A~%" e)
-           (log:debug :clim-render-phase "Error in delegate-draw: ~A~%" e)
-           (log:error :mcclim-render-stack "Error in delegate-draw: ~A" e))))
+  (let* ((port (clim-render-phase-port phase))
+         (runtime (port-runtime port))
+         (engine (runtime-engine runtime)))
+    (multiple-value-bind (item got-it)
+        (pipeline-try-consume (render-engine-pipeline engine))
+      (cond
+        ;; Normal pipeline path: frame was produced by render-engine-tick on the UI thread
+        (got-it
+         (format *error-output* "~&[DIAG] clim-render-phase: consumed frame from pipeline~%")
+         (handler-case
+             (render-delegate-draw runtime item)
+           (error (e)
+             (format *error-output* "~&[DIAG] Error in delegate-draw: ~A~%" e)
+             (log:debug :clim-render-phase "Error in delegate-draw: ~A~%" e)
+             (log:error :mcclim-render-stack "Error in delegate-draw: ~A" e))))
 
-      ;; Fallback: direct render when pipeline is empty.
-      ;; McCLIM's event loop may not call process-next-event in all paths
-      ;; (it can block directly on the concurrent-queue via distribute-event),
-      ;; so render-engine-tick may never be driven from the UI side.
-      ;; This fallback renders directly without the pipeline so we can at
-      ;; least confirm the Impeller path works end-to-end.
-      (t
-       (let ((delegate (clim-render-phase-delegate phase)))
-         (when (and *global-impeller-context*
-                    (plusp (hash-table-count (delegate-window-table delegate))))
-           ;; Snapshot the port list while holding the lock, then render without lock.
-           (let ((ports nil))
-             (bt2:with-lock-held ((delegate-table-lock delegate))
-               (maphash (lambda (window-id port)
-                          (declare (ignore window-id))
-                          (push port ports))
-                        (delegate-window-table delegate)))
+        ;; Fallback: direct render when pipeline is empty, throttled to ~30fps.
+        ;; McCLIM's event loop may not call process-next-event in all paths
+        ;; (it can block directly on the concurrent-queue via distribute-event),
+        ;; so render-engine-tick may never be driven from the UI side.
+        ;; This fallback renders directly without the pipeline so we can at
+        ;; least confirm the Impeller path works end-to-end.
+        (t
+         (let ((impeller-ctx (runtime-impeller-context runtime))
+               (registry-size (hash-table-count (runtime-window-registry runtime)))
+               (now (get-internal-real-time))
+               (min-interval (floor internal-time-units-per-second 30)))
+           (when (and impeller-ctx (plusp registry-size)
+                      (> (- now (clim-render-phase-last-render-time phase))
+                         min-interval))
+             (setf (clim-render-phase-last-render-time phase) now)
              (handler-case
-                 (progn
-                   (dolist (port ports)
-                     (draw-test-pattern-for-port port))
-                   (swap-all-window-buffers delegate))
+                 (render-delegate-draw runtime nil)
                (error (e)
-                 (format *error-output* "~&[DIAG] Error in direct render: ~A~%" e))))))))))
+                 (format *error-output* "~&[ERROR] clim-render-phase: direct render failed: ~A~%" e)
+                 (log:error :mcclim-render-stack "Error in direct render: ~A" e))))))))))
 
-(defun make-clim-render-phase (engine delegate)
-  "Create a CLIM-RENDER-PHASE for ENGINE and DELEGATE.
+(defun make-clim-render-phase (port)
+  "Create a CLIM-RENDER-PHASE for PORT.
 
 Arguments:
-  ENGINE   — a RENDER-ENGINE instance (owns the pipeline)
-  DELEGATE — a MULTI-WINDOW-RENDER-DELEGATE for rasterization"
-  (make-instance 'clim-render-phase
-                 :name :render-clim-frames
-                 :engine engine
-                 :delegate delegate))
+   PORT — a RENDER-STACK-PORT instance (runtime must be initialized)"
+   (make-instance 'clim-render-phase
+                  :name :render-clim-frames
+                  :port port))

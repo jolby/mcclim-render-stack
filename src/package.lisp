@@ -42,6 +42,22 @@
     #:render-stack-port
     #:render-stack-port-pipeline
 
+    ;; Runtime
+    #:render-stack-runtime
+    #:runtime-engine
+    #:runtime-impeller-context
+    #:runtime-typography-context
+    #:runtime-window-registry
+    #:runtime-initialized-p
+    #:initialize-runtime
+    #:initialize-runtime-impeller-context
+    #:register-window
+    #:unregister-window
+    #:find-sheet-for-window
+    #:mark-sheet-dirty
+    #:grab-and-clear-dirty-sheets
+    #:shutdown-runtime
+
     ;; Pointer
     #:render-stack-pointer
 

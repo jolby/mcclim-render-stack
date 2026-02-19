@@ -40,39 +40,47 @@
    (:export
     ;; Port
     #:render-stack-port
-    #:render-stack-port-pipeline
 
     ;; Runtime
     #:render-stack-runtime
+    #:runtime-port
     #:runtime-engine
     #:runtime-impeller-context
     #:runtime-typography-context
-    #:runtime-window-registry
     #:runtime-initialized-p
     #:initialize-runtime
     #:initialize-runtime-impeller-context
-    #:register-window
-    #:unregister-window
-    #:find-sheet-for-window
-    #:mark-sheet-dirty
-    #:grab-and-clear-dirty-sheets
     #:shutdown-runtime
+
+    ;; Mirror
+    #:render-stack-mirror
+    #:mirror-sdl-window
+    #:mirror-window-id
+    #:mirror-gl-context
+    #:mirror-port
+    #:mirror-sheet
+    #:mirror-surface
+    #:mirror-width
+    #:mirror-height
+    #:register-mirror
+    #:deregister-mirror
+    #:find-mirror-by-window-id
+    #:find-sheet-by-window-id
+    #:get-or-create-mirror-surface
+    #:invalidate-mirror-surface
 
     ;; Pointer
     #:render-stack-pointer
 
     ;; Medium
-   #:render-stack-medium
+    #:render-stack-medium
 
-   ;; Graft
-   #:render-stack-graft
+    ;; Graft
+    #:render-stack-graft
 
-   ;; Frame manager
-   #:render-stack-frame-manager
-   #:render-stack-frame-mixin
-
-    ;; Render delegate
-    #:clim-render-delegate
+    ;; Frame manager
+    #:render-stack-frame-manager
+    #:render-stack-frame-mixin
 
     ;; Server path
     #:initialize-render-stack

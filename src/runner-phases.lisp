@@ -63,7 +63,7 @@ Thread Contract: MUST be called on main thread."
                       (when sheet
                         (let ((clim-event (translate-sdl3-event port ev)))
                           (when clim-event
-                            (distribute-event port clim-event)))))))))))
+                            (distribute-event port clim-event))))))))))))
 
 (defun make-clim-event-drain-phase (port &key (time-budget-ms 4.0))
   "Create a CLIM-EVENT-DRAIN-PHASE for PORT.
@@ -71,10 +71,10 @@ Thread Contract: MUST be called on main thread."
 Arguments:
    PORT           — a RENDER-STACK-PORT instance
    TIME-BUDGET-MS — milliseconds to spend draining events per iteration (default 4ms)"
-   (make-instance 'clim-event-drain-phase
-                  :name :drain-clim-events
-                  :time-budget-itu (rs-internals:itu-from-milliseconds time-budget-ms)
-                  :port port))
+  (make-instance 'clim-event-drain-phase
+                 :name :drain-clim-events
+                 :time-budget-itu (rs-internals:itu-from-milliseconds time-budget-ms)
+                 :port port))
 
 ;;; -----------------------------------------------------------------------
 ;;; CLIM render phase
@@ -142,6 +142,6 @@ No time budget — we always render the frame we have."))
 
 Arguments:
    PORT — a RENDER-STACK-PORT instance (runtime must be initialized)"
-   (make-instance 'clim-render-phase
-                  :name :render-clim-frames
-                  :port port))
+  (make-instance 'clim-render-phase
+                 :name :render-clim-frames
+                 :port port))

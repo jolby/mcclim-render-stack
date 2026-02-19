@@ -124,7 +124,6 @@ Event Flow:
        :tag :inject-clim-runner-phases)))
 
 ;;; ============================================================================
-;;; NOTE: main-thread-loop has been replaced by runner phases.
 ;;; See runner-phases.lisp: clim-event-drain-phase + clim-render-phase.
 ;;; The runner yield phase (rs-sdl3:make-event-wait-yield-phase) handles
 ;;; OS-level event waiting between iterations.
@@ -139,18 +138,20 @@ Event Flow:
     
     Does NOT stop the runner, shut down the engine, or quit SDL3 —
     those are application-level concerns managed at startup/shutdown."
-   ;; Signal quit
-   (setf (port-quit-requested port) t)
-   
-   ;; Unregister window from runtime registry
-   (when (port-window-id port)
-     (unregister-window (port-runtime port) (port-window-id port)))
+  ;; Signal quit
+  (setf (port-quit-requested port) t)
+  
+  (log:debug :port "Destroy port called. Set quit requested")
+  
+  ;; Unregister window from runtime registry
+  (when (port-window-id port)
+    (unregister-window (port-runtime port) (port-window-id port)))
 
-   ;; Destroy window on the main thread via runner
-   (when (port-window port)
-     (let ((window (port-window port)))
-       (rs-sdl3:destroy-sdl3-window window))
-     (setf (port-window port) nil)))
+  ;; Destroy window on the main thread via runner
+  (when (port-window port)
+    (let ((window (port-window port)))
+      (rs-sdl3:destroy-sdl3-window window))
+    (setf (port-window port) nil)))
 
 (defmethod process-next-event ((port render-stack-port)
                                &key wait-function (timeout 0.016))

@@ -13,11 +13,11 @@
   :components ((:module "src"
                   :components ((:file "package")
                                (:file "runtime" :depends-on ("package"))
-                               (:file "multi-window-delegate" :depends-on ("package"))
-                               (:file "globals" :depends-on ("package" "multi-window-delegate"))
-                               (:file "runner-phases" :depends-on ("package" "multi-window-delegate" "globals" "runtime"))
+                               ;; (:file "multi-window-delegate" :depends-on ("package"))
+                               ;; (:file "globals" :depends-on ("package" "multi-window-delegate"))
+                               (:file "runner-phases" :depends-on ("package" "runtime"))
                                (:file "pointer" :depends-on ("package"))
-                               (:file "port" :depends-on ("package" "pointer" "multi-window-delegate" "globals" "runner-phases" "runtime"))
+                               (:file "port" :depends-on ("package" "pointer" "runner-phases" "runtime"))
                                (:file "medium" :depends-on ("port"))
                                (:file "graft" :depends-on ("port"))
                                (:file "frame-manager" :depends-on ("graft"))
@@ -35,13 +35,13 @@
                                  (:file "test-utils" :depends-on ("package" "suites"))
                                  (:file "backend-tests" :depends-on ("package" "suites" "test-utils"))
                                  (:file "ink-conversion-tests" :depends-on ("package" "suites" "test-utils" "backend-tests"))
-                                  (:file "test-multi-window-delegate" :depends-on ("package" "suites" "test-utils"))
-                                  ;; bd-3hi.9: Tests for Task 1.5
-                                  (:file "test-global-engine" :depends-on ("package" "suites" "test-utils"))
-                                  ;; bd-3hi.9: Tests for Task 1.6
-                                  (:file "test-port-refactor" :depends-on ("package" "suites" "test-utils"))
-                                  ;; bd-3hi.10: Integration Tests
-                                  (:file "test-integration" :depends-on ("package" "suites" "test-utils" "test-global-engine" "test-port-refactor"))
+                                 ;; (:file "test-multi-window-delegate" :depends-on ("package" "suites" "test-utils"))
+                                 ;; bd-3hi.9: Tests for Task 1.5
+                                 (:file "test-global-engine" :depends-on ("package" "suites" "test-utils"))
+                                 ;; bd-3hi.9: Tests for Task 1.6
+                                 (:file "test-port-refactor" :depends-on ("package" "suites" "test-utils"))
+                                 ;; bd-3hi.10: Integration Tests
+                                 (:file "test-integration" :depends-on ("package" "suites" "test-utils" "test-global-engine" "test-port-refactor"))
                                   )))
   :perform (asdf:test-op (op c)
                      (uiop:symbol-call :parachute :test :mcclim-render-stack-tests)))

@@ -63,8 +63,25 @@ Thread Contract: MUST be called on main thread."
                (cond
                  ;; Global quit event -- no window-id
                  ((eq event-type :quit)
-                  (format *error-output* "~&[EVENT] :quit received — setting port-quit-requested~%")
-                  (setf (port-quit-requested port) t))
+                  (format *error-output* "~&[EVENT] :quit received — notifying all sheets~%")
+                  (setf (port-quit-requested port) t)
+                  ;; Distribute window-manager-delete-event to all sheets so
+                  ;; McCLIM's event loop can call frame-exit and exit cleanly.
+                  ;; (SDL3 on some platforms sends :quit directly without a
+                  ;;  preceding :window-close-requested.)
+                  ;; Snapshot sheets under lock, distribute without lock held.
+                  (let ((sheets (bt2:with-lock-held ((port-registry-lock port))
+                                  (let ((s nil))
+                                    (maphash (lambda (id mirror)
+                                               (declare (ignore id))
+                                               (push (mirror-sheet mirror) s))
+                                             (port-window-registry port))
+                                    s))))
+                    (dolist (sheet sheets)
+                      (distribute-event
+                       port
+                       (make-instance 'window-manager-delete-event
+                                      :sheet sheet)))))
                  ;; Window-specific event -- route via mirror registry
                  (window-id
                   (let ((sheet (find-sheet-by-window-id port window-id)))

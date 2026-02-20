@@ -141,7 +141,11 @@ those are application-level concerns managed at startup/shutdown."
     (dolist (mirror mirrors)
       (let ((window (mirror-sdl-window mirror)))
         (when window
-          (rs-sdl3:destroy-sdl3-window window)))
+          ;; Fire-and-forget: the runner may already be stopped by the time
+          ;; destroy-port is called (runner stops on quit, then McCLIM calls
+          ;; destroy-port during frame cleanup).  :synchronize nil avoids
+          ;; blocking on a promise that will never be fulfilled.
+          (rs-sdl3:destroy-sdl3-window window :synchronize nil)))
       (deregister-mirror port mirror))))
 
 (defmethod process-next-event ((port render-stack-port)
@@ -241,28 +245,39 @@ Thread Contract: Called on UI thread. SDL3/GL ops dispatched via runner."
            (height  (or (and (plusp h) (floor h))
                         (and frame-h (floor frame-h))
                         400))
-           ;; make-sdl3-window transparently dispatches to the main thread.
-           (window  (rs-sdl3:make-sdl3-window
-                     (or (clime:sheet-pretty-name sheet) "(McCLIM)")
-                     width height))
-           ;; SDL3 window ID is needed for event routing; fetch on main thread.
-           (window-id (rs-internals:submit-to-main-thread rs-internals:*runner*
-                        (lambda ()
-                          (%sdl3:get-window-id
-                           (rs-sdl3::sdl3-window-handle window)))
-                        :blocking t
-                        :tag :get-window-id))
-           (mirror  (make-instance 'render-stack-mirror
-                                   :sdl-window window
-                                   :window-id  window-id
-                                   :gl-context (rs-sdl3::sdl3-window-gl-context window)
-                                   :port       port
-                                   :sheet      sheet
-                                   :width      width
-                                   :height     height)))
-      ;; Register so event routing can find the mirror immediately.
-      (register-mirror port mirror)
-
+           ;; Perform window creation, ID fetch, mirror creation, and registration
+           ;; atomically in ONE main-thread task.
+           ;;
+           ;; Why: the runner loop drains ALL submitted tasks first, then runs
+           ;; phases (including clim-event-drain-phase).  If we split these into
+           ;; separate tasks, the event-drain phase runs between them and sees
+           ;; WINDOW-EXPOSED/FOCUS-GAINED events for win=N before the mirror is
+           ;; registered — those events are lost with "no sheet for win=N".
+           ;;
+           ;; By doing everything in one task, the mirror is in the registry
+           ;; before the event-drain phase ever calls poll-event for this window.
+           ;;
+           ;; Note: make-sdl3-window detects it's already on the main thread
+           ;; (runner-main-thread-p returns T) and executes inline — no deadlock.
+           (mirror (rs-internals:submit-to-main-thread rs-internals:*runner*
+                     (lambda ()
+                       (let* ((window    (rs-sdl3:make-sdl3-window
+                                          (or (clime:sheet-pretty-name sheet) "(McCLIM)")
+                                          width height))
+                              (window-id (%sdl3:get-window-id
+                                          (rs-sdl3::sdl3-window-handle window)))
+                              (m         (make-instance 'render-stack-mirror
+                                                        :sdl-window window
+                                                        :window-id  window-id
+                                                        :gl-context (rs-sdl3::sdl3-window-gl-context window)
+                                                        :port       port
+                                                        :sheet      sheet
+                                                        :width      width
+                                                        :height     height)))
+                         (register-mirror port m)
+                         m))
+                     :blocking t
+                     :tag :realize-mirror-atomic)))
       ;; Create the Impeller GL context now that an SDL3 GL context is current.
       ;; Idempotent — skipped if already created (e.g. second window).
       (rs-internals:submit-to-main-thread rs-internals:*runner*

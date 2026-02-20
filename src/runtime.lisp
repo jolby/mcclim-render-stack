@@ -19,7 +19,7 @@
 ;;; Debug Helpers
 ;;; ============================================================================
 
-(defvar *debug-frame-limit* 30
+(defvar *debug-frame-limit* nil
   "Exit after this many rendered frames. Useful during development to avoid
 kill -9. Set to NIL to disable (run indefinitely).")
 

@@ -4,8 +4,8 @@
 ;;;; This implementation uses SDL3 for windowing and events,
 ;;;; and Flutter Impeller (via render-stack) for rendering.
 ;;;;
-;;;; CRITICAL ARCHITECTURE:
-;;;; - NO custom event queue — Uses McCLIM's concurrent-queue via distribute-event
+;;;; ARCHITECTURE:
+;;;; - Uses McCLIM's concurrent-queue via distribute-event
 ;;;; - Runner phases handle event drain + rendering on the OS main thread
 ;;;; - process-next-event is a minimal stub — events come via distribute-event
 ;;;; - Event flow: SDL3 → drain-sdl3-events → distribute-event → sheet queue

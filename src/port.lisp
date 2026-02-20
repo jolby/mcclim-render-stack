@@ -210,6 +210,98 @@ mirror in the registry (for single-window applications)."
           (make-instance 'render-stack-pointer :port port))))
 
 ;;; ============================================================================
+;;; McCLIM Mirror Protocol
+;;; ============================================================================
+;;;
+;;; Defined here (not mirror.lisp) so render-stack-port exists as a class
+;;; before these methods are compiled.
+
+(defmethod realize-mirror ((port render-stack-port) (sheet mirrored-sheet-mixin))
+  "Create a render-stack-mirror for SHEET and register it with PORT.
+
+Computes the initial window size from the sheet's bounding rectangle,
+falling back to frame-geometry* or 500×400 if layout has not completed.
+SDL3 window creation and GL context access are dispatched to the main thread.
+
+Thread Contract: Called on UI thread. SDL3/GL ops dispatched via runner."
+  (clim:with-bounding-rectangle* (x y :width w :height h) sheet
+    (declare (ignore x y))
+    ;; At realize-mirror time layout may not have run — bounding rect is often 0×0.
+    ;; frame-geometry* gives the user-requested size.
+    (let* ((frame   (ignore-errors (clim:pane-frame sheet)))
+           (frame-w nil)
+           (frame-h nil)
+           (_ign    (when frame
+                      (ignore-errors
+                        (multiple-value-setq (frame-w frame-h)
+                          (climi::frame-geometry* frame)))))
+           (width   (or (and (plusp w) (floor w))
+                        (and frame-w (floor frame-w))
+                        500))
+           (height  (or (and (plusp h) (floor h))
+                        (and frame-h (floor frame-h))
+                        400))
+           ;; make-sdl3-window transparently dispatches to the main thread.
+           (window  (rs-sdl3:make-sdl3-window
+                     (or (clime:sheet-pretty-name sheet) "(McCLIM)")
+                     width height))
+           ;; SDL3 window ID is needed for event routing; fetch on main thread.
+           (window-id (rs-internals:submit-to-main-thread rs-internals:*runner*
+                        (lambda ()
+                          (%sdl3:get-window-id
+                           (rs-sdl3::sdl3-window-handle window)))
+                        :blocking t
+                        :tag :get-window-id))
+           (mirror  (make-instance 'render-stack-mirror
+                                   :sdl-window window
+                                   :window-id  window-id
+                                   :gl-context (rs-sdl3::sdl3-window-gl-context window)
+                                   :port       port
+                                   :sheet      sheet
+                                   :width      width
+                                   :height     height)))
+      ;; Register so event routing can find the mirror immediately.
+      (register-mirror port mirror)
+
+      ;; Create the Impeller GL context now that an SDL3 GL context is current.
+      ;; Idempotent — skipped if already created (e.g. second window).
+      (rs-internals:submit-to-main-thread rs-internals:*runner*
+        (lambda ()
+          (initialize-runtime-impeller-context (port-runtime port)))
+        :blocking t
+        :tag :create-impeller-context)
+
+      ;; Return the mirror — McCLIM stores it as sheet-direct-mirror.
+      mirror)))
+
+(defmethod destroy-mirror ((port render-stack-port) (sheet mirrored-sheet-mixin))
+  "Destroy SHEET's mirror, releasing its Impeller surface and SDL3 window.
+
+Thread Contract: Called on UI thread. Impeller/SDL3 cleanup on main thread."
+  (let ((mirror (climi::sheet-direct-mirror sheet)))
+    (when mirror
+      ;; Release cached Impeller surface on the main thread.
+      (when (mirror-surface mirror)
+        (rs-internals:submit-to-main-thread rs-internals:*runner*
+          (lambda ()
+            (rs-internals:without-float-traps
+              (frs:release-surface (mirror-surface mirror)))
+            (setf (mirror-surface mirror) nil))
+          :blocking t
+          :tag :release-mirror-surface))
+
+      ;; Remove from registry so event routing stops finding this mirror.
+      (deregister-mirror port mirror)
+
+      ;; Destroy the SDL3 window (transparently dispatches to main thread).
+      (let ((window (mirror-sdl-window mirror)))
+        (when window
+          (rs-sdl3:destroy-sdl3-window window)))
+
+      ;; Clear the mirror reference from the sheet.
+      (setf (climi::sheet-direct-mirror sheet) nil))))
+
+;;; ============================================================================
 ;;; Runner Phase Construction
 ;;; ============================================================================
 

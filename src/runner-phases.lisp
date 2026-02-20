@@ -16,7 +16,10 @@
          :type render-stack-port
          :documentation
          "The RENDER-STACK-PORT managing the runtime.
-Drains SDL3 events and distributes them to McCLIM sheet queues."))
+Drains SDL3 events and distributes them to McCLIM sheet queues.")
+   (iteration-count :accessor clim-event-drain-phase-iteration-count
+                    :initform 0
+                    :documentation "Runner loop iteration counter for diagnostics."))
   (:documentation
    "Runner phase that drains SDL3 events through the McCLIM port.
 
@@ -29,8 +32,12 @@ the render phase:
   (make-clim-event-drain-phase port :time-budget-ms 4.0)"))
 
 (defmethod rs-internals:run-phase ((phase clim-event-drain-phase) runner)
-  (declare (ignore runner))
-  (let ((port (clim-event-drain-phase-port phase)))
+  (let ((port (clim-event-drain-phase-port phase))
+        (n    (incf (clim-event-drain-phase-iteration-count phase))))
+    ;; Periodic heartbeat: confirms the runner loop is alive and shows speed.
+    (when (zerop (mod n 30))
+      (format *error-output* "~&[RUNNER] iter=~D state=~A~%"
+              n (rs-internals:runner-state runner)))
     (drain-sdl3-events-for-port port)
     ;; Safety net: if quit was requested but frame-exit hasn't been called after
     ;; the event drain, forcefully stop the runner.
@@ -49,17 +56,32 @@ Thread Contract: MUST be called on main thread."
     (loop while (rs-sdl3:poll-event ev)
           do (let* ((event-type (rs-sdl3:get-event-type ev))
                     (window-id  (get-window-id-from-sdl3-event ev event-type)))
+               ;; Log every event except noisy mouse-motion.
+               (unless (member event-type '(:mouse-motion :mouse-wheel))
+                 (format *error-output* "~&[EVENT] type=~A win=~A~%"
+                         event-type window-id))
                (cond
                  ;; Global quit event -- no window-id
                  ((eq event-type :quit)
+                  (format *error-output* "~&[EVENT] :quit received — setting port-quit-requested~%")
                   (setf (port-quit-requested port) t))
                  ;; Window-specific event -- route via mirror registry
                  (window-id
                   (let ((sheet (find-sheet-by-window-id port window-id)))
-                    (when sheet
-                      (let ((clim-event (translate-sdl3-event port ev)))
-                        (when clim-event
-                          (distribute-event port clim-event)))))))))))
+                    (cond
+                      (sheet
+                       (let ((clim-event (translate-sdl3-event port ev)))
+                         (if clim-event
+                             (progn
+                               (format *error-output* "~&[EVENT] distributing ~A to sheet ~A~%"
+                                       (type-of clim-event) sheet)
+                               (distribute-event port clim-event))
+                             (unless (member event-type '(:mouse-motion :mouse-wheel))
+                               (format *error-output* "~&[EVENT] no CLIM translation for ~A~%"
+                                       event-type)))))
+                      (t
+                       (format *error-output* "~&[EVENT] no sheet for win=~A (type=~A)~%"
+                               window-id event-type))))))))))
 
 (defun make-clim-event-drain-phase (port &key (time-budget-ms 4.0))
   "Create a CLIM-EVENT-DRAIN-PHASE for PORT.

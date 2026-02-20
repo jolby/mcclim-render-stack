@@ -39,12 +39,7 @@
   ;; Return the orientation of the display
   :default)
 
-;;; Mirror class — used by port.lisp's realize-mirror and destroy-mirror
-
-(defclass render-stack-mirror ()
-  ((sdl-window :accessor mirror-sdl-window :initarg :sdl-window :initform nil
-               :documentation "The SDL3 window handle."))
-  (:documentation "Mirror representing an SDL3 window managed by the render-stack port."))
+;;; render-stack-mirror is defined in mirror.lisp (full class with all slots).
 
 (defmethod climi::enable-mirror ((port render-stack-port) (sheet mirrored-sheet-mixin))
   "Enable the sheet's mirror (make it visible)."

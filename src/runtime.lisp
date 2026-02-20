@@ -16,6 +16,14 @@
 (in-package :mcclim-render-stack)
 
 ;;; ============================================================================
+;;; Debug Helpers
+;;; ============================================================================
+
+(defvar *debug-frame-limit* 30
+  "Exit after this many rendered frames. Useful during development to avoid
+kill -9. Set to NIL to disable (run indefinitely).")
+
+;;; ============================================================================
 ;;; GL Proc Address Callback for Impeller
 ;;; ============================================================================
 ;;;
@@ -54,7 +62,11 @@ after the first SDL3 GL context is made current.")
    (initialized-p
     :accessor runtime-initialized-p
     :initform nil
-    :documentation "T if engine and typography context have been initialized."))
+    :documentation "T if engine and typography context have been initialized.")
+   (debug-frame-count
+    :accessor runtime-debug-frame-count
+    :initform 0
+    :documentation "Counts frames drawn. Used by *debug-frame-limit*."))
   (:documentation "Consolidated render-stack runtime state for McCLIM.
 
 Replaces the previous global-variable architecture:
@@ -178,6 +190,16 @@ Thread Contract: MUST be called on main thread."
   (rs-internals:assert-main-thread render-delegate-draw)
   (let ((port (runtime-port runtime)))
     (unless port (return-from render-delegate-draw nil))
+    ;; Debug frame limit — hard exit after N frames so we don't need kill -9.
+    ;; sb-ext:exit :abort t is a POSIX _exit() that kills all threads immediately.
+    ;; This is intentionally nuclear: clean shutdown requires McCLIM to cooperate
+    ;; (frame-exit → event loop → runner-stop), which isn't wired up yet.
+    (when *debug-frame-limit*
+      (let ((n (incf (runtime-debug-frame-count runtime))))
+        (when (>= n *debug-frame-limit*)
+          (format *error-output* "~&[DEBUG] Frame limit ~A reached — hard exit.~%"
+                  *debug-frame-limit*)
+          (sb-ext:exit :code 0 :abort t))))
     (let ((mirrors (collect-registered-mirrors port)))
       (format *error-output* "~&[DIAG] render-delegate-draw: window-count=~A~%"
               (length mirrors))

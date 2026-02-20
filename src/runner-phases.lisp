@@ -43,6 +43,19 @@ the render phase:
     ;; the event drain, forcefully stop the runner.
     (when (port-quit-requested port)
       (log:info :mcclim-render-stack "Quit requested, stopping runner")
+      ;; Notify all sheets so McCLIM's event loop can call frame-exit and unblock.
+      ;; Fires for all quit sources: :quit, :window-close-requested, ESC key.
+      ;; Snapshot under lock, distribute without lock held.
+      (let ((sheets (bt2:with-lock-held ((port-registry-lock port))
+                      (let ((s nil))
+                        (maphash (lambda (id mirror)
+                                   (declare (ignore id))
+                                   (push (mirror-sheet mirror) s))
+                                 (port-window-registry port))
+                        s))))
+        (dolist (sheet sheets)
+          (distribute-event port
+            (make-instance 'window-manager-delete-event :sheet sheet))))
       (rs-internals:runner-stop runner))))
 
 (defun drain-sdl3-events-for-port (port)
@@ -63,25 +76,10 @@ Thread Contract: MUST be called on main thread."
                (cond
                  ;; Global quit event -- no window-id
                  ((eq event-type :quit)
-                  (format *error-output* "~&[EVENT] :quit received — notifying all sheets~%")
-                  (setf (port-quit-requested port) t)
-                  ;; Distribute window-manager-delete-event to all sheets so
-                  ;; McCLIM's event loop can call frame-exit and exit cleanly.
-                  ;; (SDL3 on some platforms sends :quit directly without a
-                  ;;  preceding :window-close-requested.)
-                  ;; Snapshot sheets under lock, distribute without lock held.
-                  (let ((sheets (bt2:with-lock-held ((port-registry-lock port))
-                                  (let ((s nil))
-                                    (maphash (lambda (id mirror)
-                                               (declare (ignore id))
-                                               (push (mirror-sheet mirror) s))
-                                             (port-window-registry port))
-                                    s))))
-                    (dolist (sheet sheets)
-                      (distribute-event
-                       port
-                       (make-instance 'window-manager-delete-event
-                                      :sheet sheet)))))
+                  (format *error-output* "~&[EVENT] :quit received~%")
+                  ;; Safety net in run-phase will distribute window-manager-delete-event
+                  ;; to all sheets on the same iteration, covering all quit sources.
+                  (setf (port-quit-requested port) t))
                  ;; Window-specific event -- route via mirror registry
                  (window-id
                   (let ((sheet (find-sheet-by-window-id port window-id)))

@@ -23,15 +23,52 @@
 (defun map-clim-cursor-to-sdl3 (cursor-name)
   "Map CLIM cursor keyword to SDL3 system cursor enum value.
    Returns the SDL3 cursor enum or :default if unmapped."
-  (declare (ignore cursor-name))
-  :default)
+  (case cursor-name
+    ((:default :arrow) :default)
+    ((:prompt :text :i-beam) :text)
+    ((:button :hand :pointer :grab) :pointer)
+    ((:busy :wait) :wait)
+    ((:not-allowed :forbidden) :no)
+    ((:move) :move)
+    ((:arrow-we) :ew-resize)
+    ((:arrow-ns) :ns-resize)
+    ((:arrow-nwse) :nwse-resize)
+    ((:arrow-nesw) :nesw-resize)
+    (otherwise :default)))
 
 (defun set-sdl3-system-cursor (cursor-enum)
   "Create and set SDL3 system cursor.
-   CURSOR-ENUM should be an SDL3 system cursor enum value (keyword).
-   Currently a stub - cursor support not yet implemented."
-  (declare (ignore cursor-enum))
+   CURSOR-ENUM should be an SDL3 system cursor enum value (keyword)."
+  (let ((cursor (rs-sdl3:create-system-cursor cursor-enum)))
+    (unless (cffi:null-pointer-p cursor)
+      (rs-sdl3:set-cursor cursor)
+      t)))
+
+(defmethod (setf climi:pointer-cursor)
+    ((design symbol) (pointer render-stack-pointer))
+  "Set pointer cursor from CLIM cursor keyword."
+  (let ((sdl3-cursor (map-clim-cursor-to-sdl3 design)))
+    (set-sdl3-system-cursor sdl3-cursor)))
+
+(defmethod climi:set-sheet-pointer-cursor
+    ((port render-stack-port) (sheet climi::mirrored-sheet-mixin) cursor)
+  "Set the pointer cursor when pointer enters a sheet.
+   Only sets if the pointer is currently over the sheet's mirror."
+  (declare (ignore sheet cursor))
   nil)
+
+;; (defun map-clim-cursor-to-sdl3 (cursor-name)
+;;   "Map CLIM cursor keyword to SDL3 system cursor enum value.
+;;    Returns the SDL3 cursor enum or :default if unmapped."
+;;   (declare (ignore cursor-name))
+;;   :default)
+
+;; (defun set-sdl3-system-cursor (cursor-enum)
+;;   "Create and set SDL3 system cursor.
+;;    CURSOR-ENUM should be an SDL3 system cursor enum value (keyword).
+;;    Currently a stub - cursor support not yet implemented."
+;;   (declare (ignore cursor-enum))
+;;   nil)
 
 ;;; ============================================================================
 ;;; Pointer Position Tracking

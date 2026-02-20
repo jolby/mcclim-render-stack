@@ -96,3 +96,88 @@
   "Test pointer-button-state method exists for render-stack-pointer."
   (let ((pointer (make-instance 'mcclim-render-stack::render-stack-pointer)))
     (true (typep (mcclim-render-stack::pointer-button-state pointer) 'number))))
+
+(define-test mouse-button-translation
+  :parent mcclim-render-stack-suite
+  "Test SDL3 to CLIM mouse button mapping."
+  ;; Test button mapping
+  (is eq :left (mcclim-render-stack::sdl3-button-to-clim-button 1))
+  (is eq :middle (mcclim-render-stack::sdl3-button-to-clim-button 2))
+  (is eq :right (mcclim-render-stack::sdl3-button-to-clim-button 3))
+  (is eq :wheel-up (mcclim-render-stack::sdl3-button-to-clim-button 4))
+  (is eq :wheel-down (mcclim-render-stack::sdl3-button-to-clim-button 5))
+  ;; Test unknown button returns nil
+  (is eq nil (mcclim-render-stack::sdl3-button-to-clim-button 99))
+  ;; Test button constants
+  (is = clim:+pointer-left-button+ (mcclim-render-stack::sdl3-button-to-clim-constant 1))
+  (is = clim:+pointer-middle-button+ (mcclim-render-stack::sdl3-button-to-clim-constant 2))
+  (is = clim:+pointer-right-button+ (mcclim-render-stack::sdl3-button-to-clim-constant 3)))
+
+(define-test pointer-button-state-tracking
+  :parent mcclim-render-stack-suite
+  "Test pointer button state tracking."
+  (let ((pointer (make-instance 'mcclim-render-stack::render-stack-pointer)))
+    ;; Initial state should be no button
+    (is = 0 (mcclim-render-stack::pointer-button-state pointer))
+    ;; Press left button
+    (mcclim-render-stack::update-pointer-button-state pointer :left t)
+    (true (plusp (logand (mcclim-render-stack::pointer-button-state pointer)
+                         clim:+pointer-left-button+)))
+    ;; Press right button (multi-button)
+    (mcclim-render-stack::update-pointer-button-state pointer :right t)
+    (true (plusp (logand (mcclim-render-stack::pointer-button-state pointer)
+                         clim:+pointer-left-button+)))
+    (true (plusp (logand (mcclim-render-stack::pointer-button-state pointer)
+                         clim:+pointer-right-button+)))
+    ;; Release left button
+    (mcclim-render-stack::update-pointer-button-state pointer :left nil)
+    (is = 0 (logand (mcclim-render-stack::pointer-button-state pointer)
+                    clim:+pointer-left-button+))
+    ;; Right button should still be pressed
+    (true (plusp (logand (mcclim-render-stack::pointer-button-state pointer)
+                         clim:+pointer-right-button+)))))
+
+;;; Pointer Button State Tracking Test
+
+(define-test pointer-button-state-tracking
+  :parent mcclim-render-stack-suite
+  "Test pointer button state tracking."
+  (let ((pointer (make-instance 'mcclim-render-stack::render-stack-pointer)))
+    ;; Initial state should be no button
+    (is = 0 (mcclim-render-stack::pointer-button-state pointer))
+    ;; Press left button
+    (mcclim-render-stack::update-pointer-button-state pointer :left t)
+    (true (plusp (logand (mcclim-render-stack::pointer-button-state pointer)
+                         clim:+pointer-left-button+)))
+    ;; Press right button (multi-button)
+    (mcclim-render-stack::update-pointer-button-state pointer :right t)
+    (true (plusp (logand (mcclim-render-stack::pointer-button-state pointer)
+                         clim:+pointer-left-button+)))
+    (true (plusp (logand (mcclim-render-stack::pointer-button-state pointer)
+                         clim:+pointer-right-button+)))
+    ;; Release left button
+    (mcclim-render-stack::update-pointer-button-state pointer :left nil)
+    (is = 0 (logand (mcclim-render-stack::pointer-button-state pointer)
+                    clim:+pointer-left-button+))
+    ;; Right button should still be pressed
+    (true (plusp (logand (mcclim-render-stack::pointer-button-state pointer)
+                         clim:+pointer-right-button+)))))
+
+(define-test pointer-position-tracking
+  :parent mcclim-render-stack-suite
+  "Test pointer position tracking."
+  (let ((pointer (make-instance 'mcclim-render-stack::render-stack-pointer)))
+    ;; Initial position should be 0,0
+    (multiple-value-bind (x y) (mcclim-render-stack::pointer-position pointer)
+      (is = 0 x)
+      (is = 0 y))
+    ;; Update position
+    (mcclim-render-stack::update-pointer-position pointer 100 200)
+    (multiple-value-bind (x y) (mcclim-render-stack::pointer-position pointer)
+      (is = 100 x)
+      (is = 200 y))
+    ;; Update again
+    (mcclim-render-stack::update-pointer-position pointer 300 400)
+    (multiple-value-bind (x y) (mcclim-render-stack::pointer-position pointer)
+      (is = 300 x)
+      (is = 400 y))))

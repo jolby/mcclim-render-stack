@@ -27,12 +27,20 @@
 (asdf:defsystem :mcclim-render-stack/tests
   :depends-on (:mcclim-render-stack
                :parachute
-               :uiop
                :lparallel)
   :components ((:module "test"
                     :components ((:file "package")
                                  (:file "suites"     :depends-on ("package"))
-                                 (:file "test-utils" :depends-on ("package" "suites")))))
+                                 (:file "test-utils" :depends-on ("package" "suites"))
+                                 (:file "port-tests" :depends-on ("package" "suites"))
+                                 (:file "medium-tests" :depends-on ("package" "suites"))
+                                 (:file "pointer-tests" :depends-on ("package" "suites"))
+                                 (:file "keyboard-event-tests" :depends-on ("package" "suites"))
+                                 (:file "ink-conversion-tests" :depends-on ("package" "suites"))
+                                 (:file "line-style-tests" :depends-on ("package" "suites"))
+                                 (:file "text-style-tests" :depends-on ("package" "suites"))
+                                 (:file "font-metrics-tests" :depends-on ("package" "suites"))
+                                 )))
   :perform (asdf:test-op (op c)
                      (uiop:symbol-call :parachute :test :mcclim-render-stack-tests)))
 

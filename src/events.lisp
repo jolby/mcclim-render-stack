@@ -8,6 +8,30 @@
 
 (in-package :mcclim-render-stack)
 
+;;; SDL3 modifier key constants
+;;; These are bitmask values used in keyboard event mod field
+
+(defconstant +sdl3-kmod-lshift+ 1)
+(defconstant +sdl3-kmod-rshift+ 2)
+(defconstant +sdl3-kmod-lctrl+ 64)
+(defconstant +sdl3-kmod-rctrl+ 128)
+(defconstant +sdl3-kmod-lalt+ 256)
+(defconstant +sdl3-kmod-ralt+ 512)
+(defconstant +sdl3-kmod-lgui+ 1024)
+(defconstant +sdl3-kmod-rgui+ 2048)
+
+(defconstant +sdl3-kmod-shift+ 3)
+(defconstant +sdl3-kmod-ctrl+ 192)
+(defconstant +sdl3-kmod-alt+ 768)
+(defconstant +sdl3-kmod-gui+ 3072)
+
+;;; SDL3 mouse button constants
+(defconstant +sdl3-button-left+ 1)
+(defconstant +sdl3-button-middle+ 2)
+(defconstant +sdl3-button-right+ 3)
+(defconstant +sdl3-button-x1+ 4)
+(defconstant +sdl3-button-x2+ 5)
+
 ;; Forward declarations for functions defined in mirror.lisp (loaded after events.lisp).
 ;; These are resolved at runtime; the declaims suppress SBCL compile-time warnings.
 (declaim (ftype (function (t t) t) find-mirror-by-window-id))
@@ -35,6 +59,45 @@ Dispatches on EVENT-TYPE keyword using the appropriate rs-sdl3 accessor."
     (:mouse-wheel
      (rs-sdl3:mouse-wheel-event-window-id event-ptr))
     (otherwise nil)))
+
+;;; Modifier translation
+
+(defun sdl3-mod-to-clim-mod (sdl3-mod)
+  "Translate SDL3 modifier bitmask to CLIM modifier bitmask.
+
+  Arguments:
+    sdl3-mod - SDL3 modifier state (integer bitmask from keyboard event)
+
+  Returns:
+    CLIM modifier state (integer bitmask using +shift-key+, etc.)"
+  (declare (type integer sdl3-mod))
+  (flet ((maybe-mod (clim-mod sdl3-mask)
+           (if (plusp (logand sdl3-mod sdl3-mask))
+               clim-mod
+               0)))
+    (logior (maybe-mod clim:+shift-key+ +sdl3-kmod-shift+)
+            (maybe-mod clim:+control-key+ +sdl3-kmod-ctrl+)
+            (maybe-mod clim:+meta-key+ +sdl3-kmod-alt+)
+            (maybe-mod clim:+super-key+ +sdl3-kmod-lgui+)
+            (maybe-mod clim:+hyper-key+ +sdl3-kmod-rgui+))))
+
+;;; Button translation
+
+(defun sdl3-button-to-clim-button (sdl3-button)
+  "Translate SDL3 mouse button number to CLIM button constant.
+
+  Arguments:
+    sdl3-button - SDL3 button number (1=left, 2=middle, 3=right, 4=x1, 5=x2)
+
+  Returns:
+    CLIM button constant (+pointer-left-button+, etc.)"
+  (declare (type integer sdl3-button))
+  (cond ((= sdl3-button +sdl3-button-left+) clim:+pointer-left-button+)
+        ((= sdl3-button +sdl3-button-middle+) clim:+pointer-middle-button+)
+        ((= sdl3-button +sdl3-button-right+) clim:+pointer-right-button+)
+        ((= sdl3-button +sdl3-button-x1+) clim:+pointer-wheel-down+)
+        ((= sdl3-button +sdl3-button-x2+) clim:+pointer-wheel-up+)
+        (t climi::+pointer-no-button+)))
 
 ;;; ============================================================================
 ;;; Keycode translation

@@ -328,15 +328,19 @@ Thread Contract: Called on UI thread. SDL3/GL ops dispatched via runner."
 Thread Contract: Called on UI thread. Impeller/SDL3 cleanup on main thread."
   (let ((mirror (climi::sheet-direct-mirror sheet)))
     (when mirror
-      ;; Release cached Impeller surface on the main thread.
-      (when (mirror-surface mirror)
+      ;; Release cached Impeller surface and retained DL on the main thread.
+      (when (or (mirror-surface mirror) (mirror-current-dl mirror))
         (rs-internals:submit-to-main-thread rs-internals:*runner*
           (lambda ()
-            (rs-internals:without-float-traps
-              (frs:release-surface (mirror-surface mirror)))
-            (setf (mirror-surface mirror) nil))
+            (when (mirror-surface mirror)
+              (rs-internals:without-float-traps
+                (frs:release-surface (mirror-surface mirror)))
+              (setf (mirror-surface mirror) nil))
+            (when (mirror-current-dl mirror)
+              (frs:release-display-list (mirror-current-dl mirror))
+              (setf (mirror-current-dl mirror) nil)))
           :blocking t
-          :tag :release-mirror-surface))
+          :tag :release-mirror-resources))
 
       ;; Remove from registry so event routing stops finding this mirror.
       (deregister-mirror port mirror)

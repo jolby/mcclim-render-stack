@@ -73,6 +73,12 @@ Finalized (builder->DL) by medium-finish-output, then set back to NIL.")
     :documentation "Completed Impeller display list waiting to be rasterized by the main thread.
 Protected by dl-lock. Set by mirror-store-pending-dl (UI thread),
 consumed and cleared by mirror-take-pending-dl (main thread).")
+   (current-dl
+    :initform nil
+    :accessor mirror-current-dl
+    :documentation "Last successfully rendered display list, retained for redraw each frame.
+Written and read exclusively on the main thread — no lock needed.
+Released on destroy-mirror or when replaced by a new DL.")
    (dl-lock
     :initform (bt2:make-lock :name "mirror-dl")
     :reader mirror-dl-lock

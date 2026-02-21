@@ -255,8 +255,11 @@ Thread Contract: MUST be called on main thread."
             ;; First-frame path: window is hidden. Run staged reveal sequence.
             ((not (mirror-first-frame-drawn-p mirror))
              (perform-first-frame-reveal mirror dl))
-            ;; McCLIM produced a display list — draw it and swap.
+            ;; McCLIM produced a new display list — replace retained DL and draw.
             (dl
+             (let ((old (mirror-current-dl mirror)))
+               (when old (frs:release-display-list old)))
+             (setf (mirror-current-dl mirror) dl)
              (handler-case
                  (let ((surface (get-or-create-mirror-surface mirror)))
                    (when surface
@@ -264,11 +267,19 @@ Thread Contract: MUST be called on main thread."
                        (frs:surface-draw-display-list surface dl))))
                (error (e)
                  (log:error :render "Error drawing display list: ~A" e)))
-             (frs:release-display-list dl)
              (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror)))
-            ;; No DL from McCLIM — draw test pattern and swap.
+            ;; No new DL — redraw retained DL if available, else test pattern.
             (t
-             (draw-test-pattern-for-mirror mirror)
+             (let ((current (mirror-current-dl mirror)))
+               (if current
+                   (handler-case
+                       (let ((surface (get-or-create-mirror-surface mirror)))
+                         (when surface
+                           (rs-internals:without-float-traps
+                             (frs:surface-draw-display-list surface current))))
+                     (error (e)
+                       (log:error :render "Error redrawing retained DL: ~A" e)))
+                   (draw-test-pattern-for-mirror mirror)))
              (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror)))))))))
 
 ;;; ============================================================================
@@ -320,7 +331,8 @@ Thread Contract: MUST be called on main thread."
                       (frs:surface-draw-display-list surface dl))))
               (error (e)
                 (log:error :render "First-frame: DL draw error: ~A" e)))
-            (frs:release-display-list dl))
+            ;; Retain DL for subsequent frames — do NOT release here.
+            (setf (mirror-current-dl mirror) dl))
           (draw-test-pattern-for-mirror mirror))
       ;; 2. Commit content to framebuffer (window still hidden).
       (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror))

@@ -20,6 +20,18 @@
   (or (medium-paint medium)
       (setf (medium-paint medium) (frs:make-paint))))
 
+(defun %get-device-pixel-ratio (medium)
+  "Get the device pixel ratio (HiDPI scale) from the medium's mirror."
+  (let* ((sheet (clim:medium-sheet medium))
+         (mirror (when sheet (climi::sheet-mirror sheet))))
+    (if (and mirror (typep mirror 'render-stack-mirror))
+        (let* ((pw (mirror-width mirror))
+               (lw (mirror-logical-width mirror)))
+          (if (and pw lw (> lw 0))
+              (float (/ pw lw) 1.0f0)
+              1.0f0))
+        1.0f0)))
+
 (defun %get-medium-builder (medium)
   "Get or create the Impeller display list builder for the current McCLIM frame.
 
@@ -56,6 +68,9 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
             (frs:display-list-builder-set-transform builder scale-x scale-y 0.0f0 0.0f0))
           (setf (mirror-display-list-builder mirror) builder)
           builder))))
+
+
+
 
 ;;; CLIM Internal Functions
 
@@ -221,64 +236,99 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
     ;; Apply dash pattern (placeholder - not yet implemented)
     (apply-line-style-dashes paint line-style)))
 
+;;; Device transformation helpers
+
+(defun %get-medium-transformation (medium)
+  "Get the device transformation for the medium.
+   Returns the transformation mapping medium coordinates to device (window) coordinates."
+  (climi::medium-device-transformation medium))
+
+(defun %rectilinear-p (transformation)
+  "Check if TRANSFORMATION is rectilinear (axis-aligned, no rotation/shear)."
+  (rectilinear-transformation-p transformation))
+
+(defun %compute-transform-scale (medium transformation)
+  "Estimate the uniform scaling factor from TRANSFORMATION.
+   Used to scale point sizes so they remain visible under transformations."
+  (declare (ignore medium))
+  (if (identity-transformation-p transformation)
+      1.0f0
+      (multiple-value-bind (x y)
+          (transform-distance transformation 1.0 0.0)
+        (float (sqrt (+ (* x x) (* y y))) 1.0f0))))
+
+(defmacro %with-normalized-rect ((nx ny nw nh left top right bottom) &body body)
+  "Bind NX, NY, NW, NH to normalized rectangle coordinates (positive width/height)."
+  `(let* ((,nx (min ,left ,right))
+          (,ny (min ,top ,bottom))
+          (,nw (abs (- ,right ,left)))
+          (,nh (abs (- ,bottom ,top))))
+     ,@body))
+
 ;;; Medium drawing operations
-;;; These will be implemented using flutter-render-stack (Impeller)
 
 (defmethod medium-draw-point* ((medium render-stack-medium) x y)
   "Draw a single point at (x, y) as a small filled rectangle."
   (let* ((paint (%get-medium-paint medium))
          (ink (medium-ink medium))
+         (tr (%get-medium-transformation medium))
          (builder (%get-medium-builder medium)))
     (when builder
       (with-ink-on-paint (paint ink medium)
-        (frs:paint-set-draw-style paint :fill)
-        ;; Draw as 1x1 pixel rectangle
-        (frs:draw-rect builder
-                       (float x 1.0f0)
-                       (float y 1.0f0)
-                       1.0f0
-                       1.0f0
-                       paint)))))
+        (let ((scale (%compute-transform-scale medium tr)))
+          (frs:paint-set-draw-style paint :fill)
+          (climi::with-transformed-position (tr x y)
+            (frs:draw-rect builder
+                           (float x 1.0f0)
+                           (float y 1.0f0)
+                           scale scale
+                           paint)))))))
 
 (defmethod medium-draw-points* ((medium render-stack-medium) coord-seq)
   "Draw multiple points from coord-seq (sequence of x y pairs)."
   (let* ((paint (%get-medium-paint medium))
          (ink (medium-ink medium))
+         (tr (%get-medium-transformation medium))
          (builder (%get-medium-builder medium))
          (coords (coerce coord-seq 'vector)))
     (when (and builder (>= (length coords) 2))
       (with-ink-on-paint (paint ink medium)
-        (frs:paint-set-draw-style paint :fill)
-        ;; Draw each point as 1x1 rectangle
-        (loop for i from 0 below (length coords) by 2
-              do (frs:draw-rect builder
-                                (float (aref coords i) 1.0f0)
-                                (float (aref coords (1+ i)) 1.0f0)
-                                1.0f0
-                                1.0f0
-                                paint))))))
+        (let ((scale (%compute-transform-scale medium tr)))
+          (frs:paint-set-draw-style paint :fill)
+          (loop for i from 0 below (length coords) by 2
+                do (let ((x (aref coords i))
+                         (y (aref coords (1+ i))))
+                     (climi::with-transformed-position (tr x y)
+                       (frs:draw-rect builder
+                                      (float x 1.0f0)
+                                      (float y 1.0f0)
+                                      scale scale
+                                      paint)))))))))
 
 (defmethod medium-draw-line* ((medium render-stack-medium) x1 y1 x2 y2)
   "Draw a line from (x1, y1) to (x2, y2)."
   (let* ((paint (%get-medium-paint medium))
          (ink (medium-ink medium))
+         (tr (%get-medium-transformation medium))
          (builder (%get-medium-builder medium)))
     (when builder
       (with-ink-on-paint (paint ink medium)
         (configure-paint-for-stroke paint (medium-line-style medium) medium)
-        (frs:with-path-builder (pb)
-          (frs:path-move-to pb (float x1 1.0f0) (float y1 1.0f0))
-          (frs:path-line-to pb (float x2 1.0f0) (float y2 1.0f0))
-          (let ((path (frs:build-path pb)))
-            (unwind-protect
-                 (frs:draw-path builder path paint)
-              (frs:release-path path))))))))
+        (climi::with-transformed-positions* (tr x1 y1 x2 y2)
+          (frs:with-path-builder (pb)
+            (frs:path-move-to pb (float x1 1.0f0) (float y1 1.0f0))
+            (frs:path-line-to pb (float x2 1.0f0) (float y2 1.0f0))
+            (let ((path (frs:build-path pb)))
+              (unwind-protect
+                   (frs:draw-path builder path paint)
+                (frs:release-path path)))))))))
 
 (defmethod medium-draw-lines* ((medium render-stack-medium) coord-seq)
   "Draw multiple independent line segments from coord-seq.
    coord-seq contains groups of 4 values: x1 y1 x2 y2 for each line segment."
   (let* ((paint (%get-medium-paint medium))
          (ink (medium-ink medium))
+         (tr (%get-medium-transformation medium))
          (builder (%get-medium-builder medium))
          (coords (coerce coord-seq 'vector)))
     (when (and builder (>= (length coords) 4))
@@ -287,12 +337,13 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
         (frs:with-path-builder (pb)
           (loop for i from 0 below (length coords) by 4
                 when (<= (+ i 3) (length coords))
-                do (frs:path-move-to pb
-                                     (float (aref coords i) 1.0f0)
-                                     (float (aref coords (+ i 1)) 1.0f0))
-                   (frs:path-line-to pb
-                                     (float (aref coords (+ i 2)) 1.0f0)
-                                     (float (aref coords (+ i 3)) 1.0f0)))
+                do (let ((x1 (aref coords i))
+                         (y1 (aref coords (+ i 1)))
+                         (x2 (aref coords (+ i 2)))
+                         (y2 (aref coords (+ i 3))))
+                     (climi::with-transformed-positions* (tr x1 y1 x2 y2)
+                       (frs:path-move-to pb (float x1 1.0f0) (float y1 1.0f0))
+                       (frs:path-line-to pb (float x2 1.0f0) (float y2 1.0f0)))))
           (let ((path (frs:build-path pb)))
             (unwind-protect
                  (frs:draw-path builder path paint)
@@ -306,23 +357,26 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
    filled: if T, fill the polygon; otherwise stroke the outline"
   (let* ((paint (%get-medium-paint medium))
          (ink (medium-ink medium))
+         (tr (%get-medium-transformation medium))
          (builder (%get-medium-builder medium))
          (coords (coerce coord-seq 'vector)))
-    (when (and builder (>= (length coords) 4))  ; Need at least 2 points (4 coordinates)
+    (when (and builder (>= (length coords) 4))
       (with-ink-on-paint (paint ink medium)
         (if filled
             (frs:paint-set-draw-style paint :fill)
             (configure-paint-for-stroke paint (medium-line-style medium) medium))
         (frs:with-path-builder (pb)
-          ;; Move to first point
-          (frs:path-move-to pb (float (aref coords 0) 1.0f0) (float (aref coords 1) 1.0f0))
-          ;; Line to remaining points
+          ;; Move to first point (transformed)
+          (multiple-value-bind (x y)
+              (transform-position tr (aref coords 0) (aref coords 1))
+            (frs:path-move-to pb (float x 1.0f0) (float y 1.0f0)))
+          ;; Line to remaining points (transformed)
           (loop for i from 2 below (length coords) by 2
-                do (frs:path-line-to pb (float (aref coords i) 1.0f0) (float (aref coords (1+ i)) 1.0f0)))
-          ;; Close path if requested
+                do (multiple-value-bind (x y)
+                       (transform-position tr (aref coords i) (aref coords (1+ i)))
+                     (frs:path-line-to pb (float x 1.0f0) (float y 1.0f0))))
           (when closed
             (frs:path-close pb))
-          ;; Build and draw the path
           (let ((path (frs:build-path pb)))
             (unwind-protect
                  (frs:draw-path builder path paint)
@@ -332,26 +386,41 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
   "Draw a rectangle from (x1, y1) to (x2, y2).
 
    If filled is T, fills the rectangle with the medium's current ink.
-   If filled is NIL, strokes the rectangle outline using the medium's line style."
+   If filled is NIL, strokes the rectangle outline using the medium's line style.
+   Uses optimized draw-rect for axis-aligned transforms, falls back to
+   path drawing for rotated/sheared rectangles."
   (let* ((paint (%get-medium-paint medium))
          (ink (medium-ink medium))
+         (tr (%get-medium-transformation medium))
          (builder (%get-medium-builder medium)))
     (when builder
       (with-ink-on-paint (paint ink medium)
         (if filled
             (frs:paint-set-draw-style paint :fill)
             (configure-paint-for-stroke paint (medium-line-style medium) medium))
-        ;; Normalize rectangle coordinates (ensure positive width/height)
-        (let ((nx (min x1 x2))
-              (ny (min y1 y2))
-              (nw (abs (- x2 x1)))
-              (nh (abs (- y2 y1))))
-          (frs:draw-rect builder
-                         (float nx 1.0f0)
-                         (float ny 1.0f0)
-                         (float nw 1.0f0)
-                         (float nh 1.0f0)
-                         paint))))))
+        (if (%rectilinear-p tr)
+            ;; Fast path: axis-aligned transform — use draw-rect
+            (climi::with-transformed-positions* (tr x1 y1 x2 y2)
+              (%with-normalized-rect (nx ny nw nh x1 y1 x2 y2)
+                (frs:draw-rect builder
+                               (float nx 1.0f0) (float ny 1.0f0)
+                               (float nw 1.0f0) (float nh 1.0f0)
+                               paint)))
+            ;; General path: rotated/sheared — transform each corner
+            (frs:with-path-builder (pb)
+              (multiple-value-bind (ax ay) (transform-position tr x1 y1)
+                (frs:path-move-to pb (float ax 1.0f0) (float ay 1.0f0)))
+              (multiple-value-bind (bx by) (transform-position tr x2 y1)
+                (frs:path-line-to pb (float bx 1.0f0) (float by 1.0f0)))
+              (multiple-value-bind (cx cy) (transform-position tr x2 y2)
+                (frs:path-line-to pb (float cx 1.0f0) (float cy 1.0f0)))
+              (multiple-value-bind (dx dy) (transform-position tr x1 y2)
+                (frs:path-line-to pb (float dx 1.0f0) (float dy 1.0f0)))
+              (frs:path-close pb)
+              (let ((path (frs:build-path pb)))
+                (unwind-protect
+                     (frs:draw-path builder path paint)
+                  (frs:release-path path)))))))))
 
 (defmethod medium-draw-ellipse* ((medium render-stack-medium)
                                   center-x center-y
@@ -364,31 +433,31 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
    For a circle: radius-1-dx = r, radius-1-dy = 0, radius-2-dx = 0, radius-2-dy = r
    start-angle and end-angle are in radians (nil means full ellipse).
    filled: T to fill, NIL to stroke."
-  (declare (ignore start-angle end-angle))  ; Arcs deferred to later phase
+  (declare (ignore start-angle end-angle))
   (let* ((paint (%get-medium-paint medium))
          (ink (medium-ink medium))
+         (tr (%get-medium-transformation medium))
          (builder (%get-medium-builder medium)))
     (when builder
       (with-ink-on-paint (paint ink medium)
         (if filled
             (frs:paint-set-draw-style paint :fill)
             (configure-paint-for-stroke paint (medium-line-style medium) medium))
-        ;; Calculate bounding rectangle from radius vectors
-        ;; For axis-aligned: radius-x = max(|r1dx|, |r2dx|), radius-y = max(|r1dy|, |r2dy|)
-        (let* ((radius-x (max (abs radius-1-dx) (abs radius-2-dx)))
-               (radius-y (max (abs radius-1-dy) (abs radius-2-dy)))
-               (left (- center-x radius-x))
-               (top (- center-y radius-y))
-               (width (* 2 radius-x))
-               (height (* 2 radius-y)))
-          ;; Use draw-oval for the ellipse (axis-aligned)
-          ;; Note: rotated ellipses would need path-based approximation
-          (frs:draw-oval builder
-                         (float left 1.0f0)
-                         (float top 1.0f0)
-                         (float width 1.0f0)
-                         (float height 1.0f0)
-                         paint))))))
+        ;; Transform center and radius vectors
+        (climi::with-transformed-position (tr center-x center-y)
+          (climi::with-transformed-distance (tr radius-1-dx radius-1-dy)
+            (climi::with-transformed-distance (tr radius-2-dx radius-2-dy)
+              (let* ((radius-x (max (abs radius-1-dx) (abs radius-2-dx)))
+                     (radius-y (max (abs radius-1-dy) (abs radius-2-dy)))
+                     (left (- center-x radius-x))
+                     (top (- center-y radius-y))
+                     (right (+ center-x radius-x))
+                     (bottom (+ center-y radius-y)))
+                (%with-normalized-rect (nx ny nw nh left top right bottom)
+                  (frs:draw-oval builder
+                                 (float nx 1.0f0) (float ny 1.0f0)
+                                 (float nw 1.0f0) (float nh 1.0f0)
+                                 paint))))))))))
 
 (defmethod medium-draw-text* ((medium render-stack-medium)
                                 string x y
@@ -403,74 +472,76 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
    toward-x/y and transform-glyphs are ignored in Phase 2."
    (declare (ignore toward-x toward-y transform-glyphs))
    (let* ((builder (%get-medium-builder medium))
+          (tr (%get-medium-transformation medium))
           (port (port medium)))
-     (when builder
-       (let* ((text-style (medium-text-style medium))
-              (substr (subseq string (or start 0) (or end (length string))))
-              (typo-ctx (runtime-typography-context (port-runtime port)))
-             (paint (%get-medium-paint medium))
-             (style (frs:make-paragraph-style)))
-        (unwind-protect
-             (progn
-               ;; Configure text style
-               (multiple-value-bind (family face size)
-                   (text-style-components text-style)
-                 (let ((mapped-family (case family
-                                        (:serif "Roboto Serif")
-                                        (:sans-serif "Roboto")
-                                        (:fix "Roboto Mono")
-                                        (t (or family "Roboto"))))
-                       (mapped-size (case size
-                                      (:tiny 8.0f0)
-                                      (:very-small 10.0f0)
-                                      (:small 12.0f0)
-                                      (:normal 14.0f0)
-                                      (:large 18.0f0)
-                                      (:very-large 24.0f0)
-                                      (:huge 32.0f0)
-                                      (t (float (or size 14) 1.0f0))))
-                       (weight (if (and (listp face) (member :bold face))
-                                   :weight700
-                                   :weight400))
-                       (slant (if (and (listp face) (member :italic face))
-                                  :italic
-                                  :normal)))
-                   (frs:paragraph-style-set-font-family style mapped-family)
-                   (frs:paragraph-style-set-font-size style mapped-size)
-                   (frs:paragraph-style-set-font-weight style weight)
-                   (frs:paragraph-style-set-font-style style slant)
-                   ;; Set text color from medium ink
-                   (multiple-value-bind (r g b a)
-                       (clim-ink-to-impeller-color (medium-ink medium) medium)
-                     (frs:paint-set-color paint r g b a)
-                     (frs:paragraph-style-set-foreground style paint))))
-               ;; Build paragraph
-               (frs:with-paragraph-builder (pb typo-ctx)
-                 (frs:paragraph-builder-push-style pb style)
-                 (frs:paragraph-builder-add-text pb substr)
-                 (frs:paragraph-builder-pop-style pb)
-                 (let ((paragraph (frs:paragraph-builder-build pb 10000.0f0)))
-                   (unwind-protect
-                        ;; Calculate position with alignment
-                        (let* ((width (frs:paragraph-get-longest-line-width paragraph))
-                               (height (frs:paragraph-get-height paragraph))
-                               (baseline (frs:paragraph-get-alphabetic-baseline paragraph))
-                               (draw-x (float (case align-x
-                                                ((:left nil) x)
-                                                (:center (- x (/ width 2.0)))
-                                                (:right (- x width))
-                                                (t x))
-                                              1.0f0))
-                               (draw-y (float (case align-y
-                                                ((:top nil) y)
-                                                (:center (- y (/ height 2.0)))
-                                                (:baseline (- y baseline))
-                                                (:bottom (- y height))
-                                                (t y))
-                                              1.0f0)))
-                          (frs:draw-paragraph builder paragraph draw-x draw-y))
-                     (frs:release-paragraph paragraph)))))
-          (frs:release-paragraph-style style))))))
+     (when (and builder
+                (> (- (or end (length string)) (or start 0)) 0))
+       (climi::with-transformed-position (tr x y)
+         (let* ((text-style (medium-text-style medium))
+                (substr (subseq string (or start 0) (or end (length string))))
+                (typo-ctx (runtime-typography-context (port-runtime port)))
+                (paint (%get-medium-paint medium))
+                (style (frs:make-paragraph-style)))
+           (unwind-protect
+                (progn
+                  ;; Configure text style
+                  (multiple-value-bind (family face size)
+                      (text-style-components text-style)
+                    (let ((mapped-family (case family
+                                           (:serif "Roboto Serif")
+                                           (:sans-serif "Roboto")
+                                           (:fix "Roboto Mono")
+                                           (t (or family "Roboto"))))
+                          (mapped-size (case size
+                                         (:tiny 8.0f0)
+                                         (:very-small 10.0f0)
+                                         (:small 12.0f0)
+                                         (:normal 14.0f0)
+                                         (:large 18.0f0)
+                                         (:very-large 24.0f0)
+                                         (:huge 32.0f0)
+                                         (t (float (or size 14) 1.0f0))))
+                          (weight (if (and (listp face) (member :bold face))
+                                      :weight700
+                                      :weight400))
+                          (slant (if (and (listp face) (member :italic face))
+                                     :italic
+                                     :normal)))
+                      (frs:paragraph-style-set-font-family style mapped-family)
+                      (frs:paragraph-style-set-font-size style mapped-size)
+                      (frs:paragraph-style-set-font-weight style weight)
+                      (frs:paragraph-style-set-font-style style slant)
+                      ;; Set text color from medium ink
+                      (multiple-value-bind (r g b a)
+                          (clim-ink-to-impeller-color (medium-ink medium) medium)
+                        (frs:paint-set-color paint r g b a)
+                        (frs:paragraph-style-set-foreground style paint))))
+                  ;; Build paragraph
+                  (frs:with-paragraph-builder (pb typo-ctx)
+                    (frs:paragraph-builder-push-style pb style)
+                    (frs:paragraph-builder-add-text pb substr)
+                    (frs:paragraph-builder-pop-style pb)
+                    (let ((paragraph (frs:paragraph-builder-build pb 10000.0f0)))
+                      (unwind-protect
+                           (let* ((width (frs:paragraph-get-longest-line-width paragraph))
+                                  (height (frs:paragraph-get-height paragraph))
+                                  (baseline (frs:paragraph-get-alphabetic-baseline paragraph))
+                                  (draw-x (float (case align-x
+                                                   ((:left nil) x)
+                                                   (:center (- x (/ width 2.0)))
+                                                   (:right (- x width))
+                                                   (t x))
+                                                 1.0f0))
+                                  (draw-y (float (case align-y
+                                                   ((:top nil) y)
+                                                   (:center (- y (/ height 2.0)))
+                                                   (:baseline (- y baseline))
+                                                   (:bottom (- y height))
+                                                   (t y))
+                                                 1.0f0)))
+                             (frs:draw-paragraph builder paragraph draw-x draw-y))
+                        (frs:release-paragraph paragraph)))))
+             (frs:release-paragraph-style style)))))))
 
 ;;; Medium state
 
@@ -551,24 +622,21 @@ The render loop on the main thread handles presentation."
   "Clear a rectangular area using the medium's background color."
   (let* ((paint (%get-medium-paint medium))
          (ink (medium-background medium))
+         (tr (%get-medium-transformation medium))
          (builder (%get-medium-builder medium)))
     (when builder
-      ;; Don't use with-ink-on-paint here since we know it's just a solid color
       (multiple-value-bind (r g b a)
           (clim-ink-to-impeller-color ink medium)
         (frs:paint-set-color paint r g b a)
         (frs:paint-set-draw-style paint :fill)
-        ;; Normalize rectangle coordinates
-        (let ((nx (min left right))
-              (ny (min top bottom))
-              (nw (abs (- right left)))
-              (nh (abs (- bottom top))))
-          (frs:draw-rect builder
-                         (float nx 1.0f0)
-                         (float ny 1.0f0)
-                         (float nw 1.0f0)
-                         (float nh 1.0f0)
-                         paint))))))
+        (climi::with-transformed-positions* (tr left top right bottom)
+          (%with-normalized-rect (nx ny nw nh left top right bottom)
+            (frs:draw-rect builder
+                           (float nx 1.0f0)
+                           (float ny 1.0f0)
+                           (float nw 1.0f0)
+                           (float nh 1.0f0)
+                           paint)))))))
 
 ;;; Font Metrics Protocol
 ;;; These methods provide text measurement for layout calculations

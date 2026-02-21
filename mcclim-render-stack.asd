@@ -19,8 +19,8 @@
                                (:file "port"          :depends-on ("package" "pointer" "mirror" "runtime" "runner-phases"))
                                (:file "pointer"       :depends-on ("package"))
                                (:file "designs"       :depends-on ("package"))
-                               (:file "medium"        :depends-on ("port" "designs"))
-                               (:file "output-recording" :depends-on ("medium"))
+                               (:file "output-recording"       :depends-on ("package"))
+                               (:file "medium"        :depends-on ("port"))
                                (:file "graft"         :depends-on ("port"))
                                (:file "frame-manager" :depends-on ("graft"))
                                )))
@@ -49,5 +49,7 @@
 (asdf:defsystem :mcclim-render-stack/examples
   :depends-on (:mcclim-render-stack)
   :components ((:module "examples"
-                  :components ((:file "hello-world")
-                               (:file "simple-frame")))))
+                  :components (
+                               (:file "hello-world")
+                               ;; (:file "simple-frame")
+                               ))))

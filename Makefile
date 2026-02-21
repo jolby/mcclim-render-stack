@@ -43,3 +43,10 @@ demo: check-quicklisp
 	  --eval '(ql:quickload :mcclim-render-stack/examples :force t :silent t)' \
 	  --eval '(load "$(CWD)/examples/hello-world.lisp")' \
 	  --eval '(clim-user::hello-world-run)'
+
+demo-simple-frame: check-quicklisp
+	$(SBCL) $(SBCL_FLAGS) $(QL_BOOT) $(ASDF_BOOT) \
+	  --eval '(ql:quickload :mcclim-render-stack :force t :silent t)' \
+	  --eval '(ql:quickload :mcclim-render-stack/examples :force t :silent t)' \
+	  --eval '(load "$(CWD)/examples/simple-frame.lisp")' \
+	  --eval '(clim-user::simple-frame-run)'

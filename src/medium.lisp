@@ -186,22 +186,18 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
 (defun set-paint-from-ink (paint ink medium)
   "Configure an Impeller paint object from a CLIM ink.
 
-   Arguments:
-     paint  - Impeller paint object to configure
-     ink    - CLIM ink to use for color
-     medium - Medium providing foreground/background context
-
    Returns a color source if a gradient was used (caller must release it),
-   or NIL for solid colors. Modifies paint in place.
-
-   Note: Does NOT clear previous color sources - the with-ink-on-paint macro
-   handles cleanup only when a color source was actually used."
-  ;; For Phase 1: Only solid colors are supported
-  ;; Gradients will be added in Phase 5
-  (multiple-value-bind (r g b a)
-      (clim-ink-to-impeller-color ink medium)
-    (frs:paint-set-color paint r g b a))
-  nil)
+   or NIL for solid colors. Modifies paint in place."
+  (let ((color-source (%make-color-source-from-gradient ink)))
+    (if color-source
+        (progn
+          (frs:paint-set-color-source paint color-source)
+          color-source)
+        (progn
+          (multiple-value-bind (r g b a)
+              (clim-ink-to-impeller-color ink medium)
+            (frs:paint-set-color paint r g b a))
+          nil))))
 
 (defmacro with-ink-on-paint ((paint ink medium) &body body)
   "Configure paint from ink, execute body, cleanup any gradient color sources.
@@ -219,6 +215,11 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
            (frs:release-color-source ,color-source))))))
 
 ;;; Line Style Support
+
+(defun apply-line-style-dashes (paint line-style)
+  "Apply dash pattern from line-style to paint. Not yet implemented."
+  (declare (ignore paint line-style))
+  nil)
 
 (defun configure-paint-for-stroke (paint line-style medium)
   "Configure paint for stroke drawing based on CLIM line style.

@@ -102,8 +102,8 @@ Registered in port-window-registry by window-id for O(1) event routing."))
 (defun register-mirror (port mirror)
   "Register MIRROR in PORT's window registry under its window-id.
 Thread Contract: May be called from any thread. Acquires port-registry-lock."
-  (format *error-output* "~&[REGISTRY] registering mirror under win-id=~A (type ~A)~%"
-          (mirror-window-id mirror) (type-of (mirror-window-id mirror)))
+  (rs-internals:with-context-fields (:win (mirror-window-id mirror))
+    (log:debug :registry "Registering mirror"))
   (bt2:with-lock-held ((port-registry-lock port))
     (setf (gethash (mirror-window-id mirror)
                    (port-window-registry port))

@@ -66,7 +66,13 @@ after the first SDL3 GL context is made current.")
    (debug-frame-count
     :accessor runtime-debug-frame-count
     :initform 0
-    :documentation "Counts frames drawn. Used by *debug-frame-limit*."))
+    :documentation "Counts frames drawn. Used by *debug-frame-limit*.")
+   (startup-timings
+    :accessor runtime-startup-timings
+    :initform nil
+    :documentation "Plist of phase → ms, populated during startup for post-init inspection.
+E.g. (:sdl3-video-init 8 :typography-context 45 :impeller-context 180).
+Populated by initialize-runtime and initialize-runtime-impeller-context."))
   (:documentation "Consolidated render-stack runtime state for McCLIM.
 
 Replaces the previous global-variable architecture:
@@ -80,6 +86,35 @@ Window management lives on the port:
   port-registry-lock    — protects the registry hash table
 
 Implements the render-delegate protocol directly — no separate delegate."))
+
+;;; ============================================================================
+;;; Startup invariant checking
+;;; ============================================================================
+
+(defmacro check-startup-invariant (test category message &rest args)
+  "Assert TEST is true at startup. On failure, log :error and exit with code 1.
+Use for preconditions that indicate an unrecoverable configuration error."
+  `(unless ,test
+     (log:error ,category ,message ,@args)
+     (sb-ext:exit :code 1 :abort t)))
+
+;;; ============================================================================
+;;; Internal helpers
+;;; ============================================================================
+
+(defmacro %with-startup-phase (runtime phase &body body)
+  "Time BODY, emit an :startup log message, and record ms to RUNTIME's startup-timings.
+PHASE is an unevaluated keyword/symbol naming the startup phase.
+For use within runtime initialization methods only."
+  (let ((start (gensym "START-"))
+        (ms    (gensym "MS-")))
+    `(let ((,start (get-internal-real-time)))
+       (prog1 (progn ,@body)
+         (let ((,ms (round (* 1000 (- (get-internal-real-time) ,start))
+                           internal-time-units-per-second)))
+           (rs-internals:with-context-fields (:phase ',phase :ms ,ms)
+             (log:info :startup "~A: ~Dms" ',phase ,ms))
+           (setf (getf (runtime-startup-timings ,runtime) ',phase) ,ms))))))
 
 ;;; ============================================================================
 ;;; Initialization
@@ -104,22 +139,35 @@ MUST be called on the main thread.  Idempotent — safe to call multiple times."
     ;; Store port back-pointer before any other work.
     (setf (runtime-port runtime) port)
 
-    ;; Initialize SDL3 video subsystem.
-    (rs-sdl3:init-sdl3-video)
+    ;; Phase 0: native library must be loadable before SDL3 init.
+    ;; (sdl3-video-init will load it; check here gives a clear error if missing.)
+    ;; Phase 1: Initialize SDL3 video subsystem.
+    (%with-startup-phase runtime :sdl3-video-init
+      (rs-sdl3:init-sdl3-video))
+    (check-startup-invariant (rs-sdl3:sdl3-native-lib-loaded-p)
+      :startup "Fatal: SDL3 native library failed to load")
+    (check-startup-invariant (rs-sdl3:sdl3-initialized-p)
+      :startup "Fatal: SDL3 video subsystem failed to initialize")
+    (check-startup-invariant (not (zerop (%sdl3:get-primary-display)))
+      :startup "Fatal: No primary display found (SDL error: ~A)" (rs-sdl3:sdl3-get-error))
 
     ;; Create and register the SDL3 host.
     (setf (port-host port) (make-instance 'rs-sdl3:sdl3-host))
 
-    ;; Create typography context (can be done before a GL context exists).
-    (setf (runtime-typography-context runtime)
-          (frs:make-typography-context))
+    ;; Phase 4: Create typography context (can be done before a GL context exists).
+    (%with-startup-phase runtime :typography-context
+      (setf (runtime-typography-context runtime)
+            (frs:make-typography-context)))
+    (check-startup-invariant (runtime-typography-context runtime)
+      :startup "Fatal: Typography context creation failed")
 
     ;; Create and start the render engine with this runtime as the delegate.
-    (setf (runtime-engine runtime)
-          (render-stack:make-render-engine :delegate runtime
-                                           :pipeline-depth 2
-                                           :target-fps 60))
-    (render-stack:render-engine-start (runtime-engine runtime))
+    (%with-startup-phase runtime :render-engine-init
+      (setf (runtime-engine runtime)
+            (render-stack:make-render-engine :delegate runtime
+                                             :pipeline-depth 2
+                                             :target-fps 60))
+      (render-stack:render-engine-start (runtime-engine runtime)))
 
     (setf (runtime-initialized-p runtime) t)
     (log:info :mcclim-render-stack "Runtime initialization complete")))
@@ -138,10 +186,13 @@ Idempotent — created only once regardless of window count."))
   (rs-internals:assert-main-thread initialize-runtime-impeller-context)
   (unless (runtime-impeller-context runtime)
     (log:info :mcclim-render-stack "Creating Impeller GL context")
-    (setf (runtime-impeller-context runtime)
-          (rs-internals:without-float-traps
-            (frs:make-context :gl-proc-address-callback
-                              (cffi:callback sdl3-gl-proc-getter))))
+    (%with-startup-phase runtime :impeller-context
+      (setf (runtime-impeller-context runtime)
+            (rs-internals:without-float-traps
+              (frs:make-context :gl-proc-address-callback
+                                (cffi:callback sdl3-gl-proc-getter)))))
+    (check-startup-invariant (runtime-impeller-context runtime)
+      :startup "Fatal: Impeller GL context creation failed (GL context may be invalid)")
     (log:info :mcclim-render-stack "Impeller GL context created: ~A"
               (runtime-impeller-context runtime))))
 
@@ -160,8 +211,6 @@ Phase 2: Will inspect the port's dirty-sheet state.
 
 Thread Contract: MUST be called on UI thread."
   (rs-internals:assert-ui-thread render-delegate-begin-frame)
-  ;; (format *error-output* "~&[DIAG] render-delegate-begin-frame: frame ~A~%"
-  ;;         frame-number)
   ;; Phase 1: always produce a frame.
   t)
 
@@ -254,22 +303,29 @@ Sequence:
 
 Thread Contract: MUST be called on main thread."
   (rs-internals:assert-main-thread perform-first-frame-reveal)
-  ;; 1. Draw content (window hidden — user doesn't see this pass).
-  (if dl
-      (progn
-        (handler-case
-            (let ((surface (get-or-create-mirror-surface mirror)))
-              (when surface
-                (rs-internals:without-float-traps
-                  (frs:surface-draw-display-list surface dl))))
-          (error (e)
-            (log:error :render "First-frame: DL draw error: ~A" e)))
-        (frs:release-display-list dl))
-      (draw-test-pattern-for-mirror mirror))
-  ;; 2. Commit content to framebuffer (window still hidden).
-  (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror))
-  ;; 3. Show — window appears with content already rendered; no blank flash.
-  (rs-sdl3:show-sdl3-window (mirror-sdl-window mirror))
+  ;; Phase 6: surface must be creatable before we attempt to draw.
+  (check-startup-invariant (get-or-create-mirror-surface mirror)
+    :startup "Fatal: First frame surface creation failed for win-id=~A"
+    (mirror-window-id mirror))
+  (let ((runtime (port-runtime (mirror-port mirror))))
+    ;; 1-3. Draw, swap, show — timed together as the first-frame reveal cost.
+    (%with-startup-phase runtime :first-frame-reveal
+      ;; 1. Draw content (window hidden — user doesn't see this pass).
+      (if dl
+          (progn
+            (handler-case
+                (let ((surface (get-or-create-mirror-surface mirror)))
+                  (when surface
+                    (rs-internals:without-float-traps
+                      (frs:surface-draw-display-list surface dl))))
+              (error (e)
+                (log:error :render "First-frame: DL draw error: ~A" e)))
+            (frs:release-display-list dl))
+          (draw-test-pattern-for-mirror mirror))
+      ;; 2. Commit content to framebuffer (window still hidden).
+      (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror))
+      ;; 3. Show — window appears with content already rendered; no blank flash.
+      (rs-sdl3:show-sdl3-window (mirror-sdl-window mirror))))
   ;; 4. Center — compositor has mapped the window; physical dims now reliable.
   (rs-sdl3:center-sdl3-window (mirror-sdl-window mirror))
   ;; 5. Refresh physical pixel dims. Next frame recreates FBO at correct size.

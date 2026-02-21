@@ -36,9 +36,13 @@ the render phase:
         (n    (incf (clim-event-drain-phase-iteration-count phase))))
     ;; Periodic heartbeat: confirms the runner loop is alive and shows speed.
     (when (zerop (mod n 30))
-      (format *error-output* "~&[RUNNER] iter=~D state=~A~%"
-              n (rs-internals:runner-state runner)))
-    (drain-sdl3-events-for-port port)
+      (rs-internals:with-context-fields (:iter n :state (rs-internals:runner-state runner))
+        (log:trace :runner "event drain alive")))
+    (let ((t0 (get-internal-real-time)))
+      (drain-sdl3-events-for-port port)
+      (fc:record :event-drain-ms
+                 (round (* 1000 (- (get-internal-real-time) t0))
+                        internal-time-units-per-second)))
     ;; Safety net: if quit was requested but frame-exit hasn't been called after
     ;; the event drain, forcefully stop the runner.
     (when (port-quit-requested port)
@@ -71,12 +75,12 @@ Thread Contract: MUST be called on main thread."
                     (window-id  (get-window-id-from-sdl3-event ev event-type)))
                ;; Log every event except noisy mouse-motion.
                (unless (member event-type '(:mouse-motion :mouse-wheel))
-                 (format *error-output* "~&[EVENT] type=~A win=~A~%"
-                         event-type window-id))
+                 (rs-internals:with-context-fields (:event-type event-type :win window-id)
+                   (log:debug :event "SDL3 event received")))
                (cond
                  ;; Global quit event -- no window-id
                  ((eq event-type :quit)
-                  (format *error-output* "~&[EVENT] :quit received~%")
+                  (log:debug :event "SDL3 :quit received")
                   ;; Safety net in run-phase will distribute window-manager-delete-event
                   ;; to all sheets on the same iteration, covering all quit sources.
                   (setf (port-quit-requested port) t))
@@ -91,24 +95,24 @@ Thread Contract: MUST be called on main thread."
                                                   :window-display-scale-changed))
                          (let ((mirror (find-mirror-by-window-id port window-id)))
                            (when mirror
-                             (format *error-output* "~&[EVENT] resize win=~A, invalidating surface~%"
-                                     window-id)
+                             (rs-internals:with-context-fields (:win window-id)
+                               (log:debug :event "Window resize: invalidating surface"))
                              (invalidate-mirror-surface mirror))))
                        (let ((clim-event (translate-sdl3-event port ev)))
                          (if clim-event
                              (progn
-                               (format *error-output* "~&[EVENT] distributing ~A to sheet ~A~%"
-                                       (type-of clim-event) sheet)
+                               (rs-internals:with-context-fields (:event-type (type-of clim-event))
+                                 (log:debug :event "Distributing event to sheet"))
                                (distribute-event port clim-event))
                              (unless (member event-type '(:mouse-motion :mouse-wheel
                                                           :window-pixel-size-changed
                                                           :window-display-scale-changed
                                                           :window-first))
-                               (format *error-output* "~&[EVENT] no CLIM translation for ~A~%"
-                                       event-type)))))
+                               (rs-internals:with-context-fields (:event-type event-type)
+                                 (log:debug :event "No CLIM translation for SDL3 event"))))))
                       (t
-                       (format *error-output* "~&[EVENT] no sheet for win=~A (type=~A)~%"
-                               window-id event-type))))))))))
+                       (rs-internals:with-context-fields (:win window-id :event-type event-type)
+                         (log:debug :event "No sheet found for window")))))))))))
 
 (defun make-clim-event-drain-phase (port &key (time-budget-ms 4.0))
   "Create a CLIM-EVENT-DRAIN-PHASE for PORT.
@@ -132,7 +136,11 @@ Arguments:
          :documentation "The RENDER-STACK-PORT managing the engine and runtime.")
    (last-render-time :accessor clim-render-phase-last-render-time
                      :initform 0
-                     :documentation "Internal-real-time of last fallback render, for throttling."))
+                     :documentation "Internal-real-time of last fallback render, for throttling.")
+   (chronicle :accessor clim-render-phase-chronicle
+              :initform nil
+              :documentation "Frame-chronicle store for per-frame profiling.
+Inspect from REPL: (fc:query nil) — returns :event-drain-ms and :render-ms per sampled frame."))
   (:documentation
    "Runner phase that does non-blocking consume-and-draw for McCLIM.
 
@@ -148,46 +156,53 @@ No time budget -- we always render the frame we have."))
   (let* ((port    (clim-render-phase-port phase))
          (runtime (port-runtime port))
          (engine  (runtime-engine runtime)))
+    ;; Advance the per-frame counter for the chronicle store.
+    (fc:frame-tick)
     (multiple-value-bind (item got-it)
         (pipeline-try-consume (render-engine-pipeline engine))
-      (cond
-        ;; Normal pipeline path: frame was produced by render-engine-tick on the UI thread.
-        (got-it
-         (format *error-output* "~&[DIAG] clim-render-phase: consumed frame from pipeline~%")
-         (handler-case
-             (render-delegate-draw runtime item)
-           (error (e)
-             (format *error-output* "~&[DIAG] Error in delegate-draw: ~A~%" e)
-             (log:debug  :clim-render-phase "Error in delegate-draw: ~A~%" e)
-             (log:error :mcclim-render-stack "Error in delegate-draw: ~A" e))))
+      (let ((t0 (get-internal-real-time)))
+        (cond
+          ;; Normal pipeline path: frame was produced by render-engine-tick on the UI thread.
+          (got-it
+           (log:debug :diag "clim-render-phase: consumed frame from pipeline")
+           (handler-case
+               (render-delegate-draw runtime item)
+             (error (e)
+               (log:error :render "Error in delegate-draw: ~A" e))))
 
-        ;; Fallback: direct render when pipeline is empty, throttled to ~30fps.
-        ;; McCLIM's event loop may not call process-next-event in all paths
-        ;; (it can block directly on the concurrent-queue via distribute-event),
-        ;; so render-engine-tick may never be driven from the UI side.
-        ;; This fallback renders directly without the pipeline so we can confirm
-        ;; the Impeller path works end-to-end.
-        (t
-         (let ((impeller-ctx  (runtime-impeller-context runtime))
-               (registry-size (bt2:with-lock-held ((port-registry-lock port))
-                                (hash-table-count (port-window-registry port))))
-               (now           (get-internal-real-time))
-               (min-interval  (floor internal-time-units-per-second 30)))
-           (when (and impeller-ctx (plusp registry-size)
-                      (> (- now (clim-render-phase-last-render-time phase))
-                         min-interval))
-             (setf (clim-render-phase-last-render-time phase) now)
-             (handler-case
-                 (render-delegate-draw runtime nil)
-               (error (e)
-                 (format *error-output* "~&[ERROR] clim-render-phase: direct render failed: ~A~%" e)
-                 (log:error :mcclim-render-stack "Error in direct render: ~A" e))))))))))
+          ;; Fallback: direct render when pipeline is empty, throttled to ~30fps.
+          ;; McCLIM's event loop may not call process-next-event in all paths
+          ;; (it can block directly on the concurrent-queue via distribute-event),
+          ;; so render-engine-tick may never be driven from the UI side.
+          ;; This fallback renders directly without the pipeline so we can confirm
+          ;; the Impeller path works end-to-end.
+          (t
+           (let ((impeller-ctx  (runtime-impeller-context runtime))
+                 (registry-size (bt2:with-lock-held ((port-registry-lock port))
+                                  (hash-table-count (port-window-registry port))))
+                 (now           (get-internal-real-time))
+                 (min-interval  (floor internal-time-units-per-second 30)))
+             (when (and impeller-ctx (plusp registry-size)
+                        (> (- now (clim-render-phase-last-render-time phase))
+                           min-interval))
+               (setf (clim-render-phase-last-render-time phase) now)
+               (handler-case
+                   (render-delegate-draw runtime nil)
+                 (error (e)
+                   (log:error :render "clim-render-phase: direct render failed: ~A" e)))))))
+        (fc:record :render-ms
+                   (round (* 1000 (- (get-internal-real-time) t0))
+                          internal-time-units-per-second))))))
 
-(defun make-clim-render-phase (port)
+(defun make-clim-render-phase (port &key (sample-every-nth-frame 60))
   "Create a CLIM-RENDER-PHASE for PORT.
 
 Arguments:
-   PORT -- a RENDER-STACK-PORT instance (runtime must be initialized)"
-  (make-instance 'clim-render-phase
-                 :name :render-clim-frames
-                 :port port))
+   PORT                   -- a RENDER-STACK-PORT instance (runtime must be initialized)
+   SAMPLE-EVERY-NTH-FRAME -- chronicle sampling rate (default: every 60 frames)"
+  (let ((phase (make-instance 'clim-render-phase
+                               :name :render-clim-frames
+                               :port port)))
+    (setf (clim-render-phase-chronicle phase)
+          (fc:make-store :sample-every-nth-frame sample-every-nth-frame))
+    phase))

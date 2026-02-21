@@ -158,7 +158,7 @@ McCLIM protocol contract but does no event polling itself.
 
 Returns: (values NIL :wait-function) if wait-function fires,
          (values NIL :timeout) otherwise."
-  (format *error-output* "~&[DIAG] process-next-event: ENTERED~%")
+  (log:debug :diag "process-next-event: entered")
 
   (when (port-quit-requested port)
     (return-from process-next-event nil))
@@ -278,9 +278,10 @@ Thread Contract: Called on UI thread. SDL3/GL ops dispatched via runner."
            ;; (runner-main-thread-p returns T) and executes inline — no deadlock.
            (mirror (rs-internals:submit-to-main-thread rs-internals:*runner*
                      (lambda ()
-                       (let* ((window    (rs-sdl3:make-sdl3-window
-                                          (or (clime:sheet-pretty-name sheet) "(McCLIM)")
-                                          width height))
+                       (let* ((window    (rs-internals:with-startup-timing :window-creation
+                                           (rs-sdl3:make-sdl3-window
+                                            (or (clime:sheet-pretty-name sheet) "(McCLIM)")
+                                            width height)))
                               (window-id (%sdl3:get-window-id
                                           (rs-sdl3::sdl3-window-handle window)))
                               ;; Window is created hidden (SDL_WINDOW_HIDDEN).
@@ -300,6 +301,13 @@ Thread Contract: Called on UI thread. SDL3/GL ops dispatched via runner."
                                                         :logical-width  width
                                                         :logical-height height)))
                          (register-mirror port m)
+                         ;; Phase 5: mirror must be in registry with a valid window-id.
+                         (check-startup-invariant
+                           (and (integerp window-id) (plusp window-id))
+                           :startup "Fatal: Mirror window-id invalid after creation: ~A" window-id)
+                         (check-startup-invariant
+                           (find-mirror-by-window-id port window-id)
+                           :startup "Fatal: Mirror not found in registry after registration (win-id=~A)" window-id)
                          m))
                      :blocking t
                      :tag :realize-mirror-atomic)))

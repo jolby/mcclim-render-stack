@@ -13,53 +13,6 @@
   "Create a render-stack-medium for the given port and sheet."
   (make-instance 'render-stack-medium :port port :sheet sheet))
 
-;;; Text methods - stubs for now
-
-(defmethod clim-backend:text-bounding-rectangle*
-    ((medium render-stack-medium) string &key text-style (start 0) end)
-  "Return bounding rectangle for text. Stub implementation."
-  (multiple-value-bind (width height x y baseline)
-      (clim:text-size medium string :text-style text-style :start start :end end)
-    (declare (ignore baseline))
-    (values x y (+ x width) (+ y height) width 0)))
-
-(defmethod clim:text-size ((medium render-stack-medium) string 
-                           &key text-style (start 0) end)
-  "Return text size metrics. Stub implementation."
-  (let* ((font-size (or (clim:text-style-size text-style) 12))
-         (len (length string))
-         (width (* len font-size 0.6))
-         (height font-size))
-    (values width height 0 height height)))
-
-(defmethod clim:text-style-ascent ((text-style clim:text-style) (medium render-stack-medium))
-  "Return text ascent. Stub implementation."
-  (or (clim:text-style-size text-style) 12))
-
-(defmethod clim:text-style-descent ((text-style clim:text-style) (medium render-stack-medium))
-  "Return text descent. Stub implementation."
-  (* (or (clim:text-style-size text-style) 12) 0.2))
-
-(defmethod clim:text-style-height ((text-style clim:text-style) (medium render-stack-medium))
-  "Return text height. Stub implementation."
-  (or (clim:text-style-size text-style) 12))
-
-(defmethod clim:text-style-width ((text-style clim:text-style) (medium render-stack-medium))
-  "Return text width. Stub implementation."
-  (or (clim:text-style-size text-style) 12))
-
-(defmethod clim:text-style-descent ((text-style clim:text-style) (medium render-stack-medium))
-  "Return text descent. Stub implementation."
-  (* (or (clim:text-style-size text-style) 12) 0.2))
-
-(defmethod clim:text-style-height ((text-style clim:text-style) (medium render-stack-medium))
-  "Return text height. Stub implementation."
-  (or (clim:text-style-size text-style) 12))
-
-(defmethod clim:text-style-width ((text-style clim:text-style) (medium render-stack-medium))
-  "Return text width. Stub implementation."
-  (or (clim:text-style-size text-style) 12))
-
 ;;; Helper functions for medium drawing
 
 (defun %get-medium-paint (medium)
@@ -322,8 +275,28 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
               (frs:release-path path))))))))
 
 (defmethod medium-draw-lines* ((medium render-stack-medium) coord-seq)
-  ;; Draw multiple lines
-  (declare (ignore coord-seq)))
+  "Draw multiple independent line segments from coord-seq.
+   coord-seq contains groups of 4 values: x1 y1 x2 y2 for each line segment."
+  (let* ((paint (%get-medium-paint medium))
+         (ink (medium-ink medium))
+         (builder (%get-medium-builder medium))
+         (coords (coerce coord-seq 'vector)))
+    (when (and builder (>= (length coords) 4))
+      (with-ink-on-paint (paint ink medium)
+        (configure-paint-for-stroke paint (medium-line-style medium) medium)
+        (frs:with-path-builder (pb)
+          (loop for i from 0 below (length coords) by 4
+                when (<= (+ i 3) (length coords))
+                do (frs:path-move-to pb
+                                     (float (aref coords i) 1.0f0)
+                                     (float (aref coords (+ i 1)) 1.0f0))
+                   (frs:path-line-to pb
+                                     (float (aref coords (+ i 2)) 1.0f0)
+                                     (float (aref coords (+ i 3)) 1.0f0)))
+          (let ((path (frs:build-path pb)))
+            (unwind-protect
+                 (frs:draw-path builder path paint)
+              (frs:release-path path))))))))
 
 (defmethod medium-draw-polygon* ((medium render-stack-medium) coord-seq closed filled)
   "Draw a polygon given by coordinate sequence.
@@ -673,6 +646,18 @@ The render loop on the main thread handles presentation."
       (%text-style-to-paragraph-metrics text-style medium "M")
     (declare (ignore height baseline))
     (float width 1.0f0)))
+
+(defmethod clim-backend:text-bounding-rectangle*
+    ((medium render-stack-medium) string &key text-style (start 0) end)
+  "Calculate bounding rectangle for text string.
+   Returns six values: left, top, right, bottom, cursor-dx, cursor-dy."
+  (multiple-value-bind (width height final-x final-y baseline)
+      (text-size medium string :text-style text-style :start start :end end)
+    (declare (ignore final-x final-y baseline))
+    (if (zerop (length string))
+        (values 0.0f0 0.0f0 0.0f0 (float height 1.0f0) 0.0f0 0.0f0)
+        (values 0.0f0 0.0f0 (float width 1.0f0) (float height 1.0f0)
+                (float width 1.0f0) 0.0f0))))
 
 (defmethod text-size ((medium render-stack-medium) string
                       &key text-style (start 0) end)

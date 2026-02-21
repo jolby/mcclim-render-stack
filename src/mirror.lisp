@@ -83,6 +83,12 @@ Released on destroy-mirror or when replaced by a new DL.")
     :initform (bt2:make-lock :name "mirror-dl")
     :reader mirror-dl-lock
     :documentation "Lock protecting pending-dl for cross-thread access.")
+   (scale
+    :initarg  :scale
+    :initform 1.0f0
+    :accessor mirror-scale
+    :documentation "Display content scale factor (HiDPI).
+   Ratio of physical pixels to logical pixels, e.g. 2.0 on Retina displays.")
    (first-frame-drawn-p
     :initform nil
     :accessor mirror-first-frame-drawn-p

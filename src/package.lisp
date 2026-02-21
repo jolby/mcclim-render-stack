@@ -64,6 +64,7 @@
     #:mirror-height
     #:mirror-logical-width
     #:mirror-logical-height
+    #:mirror-scale
     #:mirror-display-list-builder
     #:mirror-pending-dl
     #:mirror-dl-lock
@@ -84,6 +85,11 @@
 
     ;; Graft
     #:render-stack-graft
+
+    ;; Output recording
+    #:render-stack-cached-output-mixin
+    #:render-stack-updating-output-record
+    #:mark-needs-rebuild
 
     ;; Frame manager
     #:render-stack-frame-manager

@@ -20,6 +20,7 @@
                                (:file "pointer"       :depends-on ("package"))
                                (:file "designs"       :depends-on ("package"))
                                (:file "medium"        :depends-on ("port" "designs"))
+                               (:file "output-recording" :depends-on ("medium"))
                                (:file "graft"         :depends-on ("port"))
                                (:file "frame-manager" :depends-on ("graft"))
                                )))

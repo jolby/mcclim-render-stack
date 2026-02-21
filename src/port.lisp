@@ -234,15 +234,21 @@ mirror in the registry (for single-window applications)."
 (defmethod realize-mirror ((port render-stack-port) (sheet mirrored-sheet-mixin))
   "Create a render-stack-mirror for SHEET and register it with PORT.
 
-Computes the initial window size from the sheet's bounding rectangle,
-falling back to frame-geometry* or 500×400 if layout has not completed.
+Computes the initial window size from frame-geometry* (user-requested size),
+falling back to the sheet bounding rectangle or 500×400.
 SDL3 window creation and GL context access are dispatched to the main thread.
 
 Thread Contract: Called on UI thread. SDL3/GL ops dispatched via runner."
   (clim:with-bounding-rectangle* (x y :width w :height h) sheet
     (declare (ignore x y))
-    ;; At realize-mirror time layout may not have run — bounding rect is often 0×0.
-    ;; frame-geometry* gives the user-requested size.
+    ;; Priority: frame-geometry* > bounding rect > 500×400 fallback.
+    ;;
+    ;; frame-geometry* reflects the user's :width/:height initargs from
+    ;; run-frame-top-level and is authoritative for the intended window size.
+    ;;
+    ;; The bounding rect at realize-mirror time is often a pre-layout stub
+    ;; value (e.g. 100×100 from default constraints) — using it first caused
+    ;; the window to be created at 100×100 instead of the requested size.
     (let* ((frame   (ignore-errors (clim:pane-frame sheet)))
            (frame-w nil)
            (frame-h nil)
@@ -250,11 +256,11 @@ Thread Contract: Called on UI thread. SDL3/GL ops dispatched via runner."
                       (ignore-errors
                         (multiple-value-setq (frame-w frame-h)
                           (climi::frame-geometry* frame)))))
-           (width   (or (and (plusp w) (floor w))
-                        (and frame-w (floor frame-w))
+           (width   (or (and frame-w (plusp frame-w) (floor frame-w))
+                        (and (plusp w) (floor w))
                         500))
-           (height  (or (and (plusp h) (floor h))
-                        (and frame-h (floor frame-h))
+           (height  (or (and frame-h (plusp frame-h) (floor frame-h))
+                        (and (plusp h) (floor h))
                         400))
            ;; Perform window creation, ID fetch, mirror creation, and registration
            ;; atomically in ONE main-thread task.

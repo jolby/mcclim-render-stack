@@ -159,7 +159,12 @@ Thread Contract: MUST be called on the main thread from drain-sdl3-events-for-po
         (:window-resized
          (let ((width  (rs-sdl3:window-event-data1 event-ptr))
                (height (rs-sdl3:window-event-data2 event-ptr)))
-           ;; Releases cached FBO surface; mirror-width/height updated by SDL3 query inside.
+           ;; SDL_EVENT_WINDOW_RESIZED carries logical (DPI-independent) pixel dims.
+           ;; Update mirror-logical-* so %get-medium-builder computes the correct
+           ;; scale factor (phys/log) for the new window size.
+           (setf (mirror-logical-width  mirror) width
+                 (mirror-logical-height mirror) height)
+           ;; Releases cached FBO surface; mirror-width/height refreshed from SDL3.
            (invalidate-mirror-surface mirror)
            (make-instance 'window-configuration-event
                           :sheet sheet

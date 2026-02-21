@@ -78,8 +78,8 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
   (let* ((sheet (medium-sheet medium))
          (mirror (when sheet (climi::sheet-mirror sheet))))
     (unless (typep mirror 'render-stack-mirror)
-      (format *error-output* "~&[BUILDER] no render-stack-mirror: sheet=~A mirror=~A (type ~A)~%"
-              (type-of sheet) mirror (type-of mirror))
+      (log:warn :render "No render-stack-mirror: sheet=~A mirror-type=~A"
+                (type-of sheet) (type-of mirror))
       (return-from %get-medium-builder nil))
     (or (mirror-display-list-builder mirror)
         ;; First drawing op for this frame — create a fresh builder.
@@ -96,8 +96,10 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
                  (scale-y (if (and (plusp log-w) (plusp log-h))
                               (float (/ phys-h log-h) 1.0f0)
                               1.0f0)))
-            (format *error-output* "~&[BUILDER] creating builder: phys=~Ax~A log=~Ax~A scale=~Ax~A~%"
-                    phys-w phys-h log-w log-h scale-x scale-y)
+            (rs-internals:with-context-fields (:phys-w phys-w :phys-h phys-h
+                                               :log-w log-w :log-h log-h
+                                               :scale-x scale-x :scale-y scale-y)
+              (log:debug :render "Creating DL builder"))
             (frs:display-list-builder-set-transform builder scale-x scale-y 0.0f0 0.0f0))
           (setf (mirror-display-list-builder mirror) builder)
           builder))))
@@ -540,15 +542,15 @@ top-level sheet (identified by having a direct mirror).
 Thread Contract: Called on UI thread."
   (let* ((sheet  (medium-sheet medium))
          (mirror (when sheet (climi::sheet-mirror sheet))))
-    (format *error-output* "~&[FINISH-OUTPUT] sheet=~A mirror-type=~A~%"
-            (type-of sheet) (type-of mirror))
+    (log:trace :render "medium-finish-output: sheet=~A mirror-type=~A"
+               (type-of sheet) (type-of mirror))
     (when (typep mirror 'render-stack-mirror)
       ;; Only finalize/publish from the top-level mirrored sheet.
       ;; Sub-pane mediums draw into the shared builder but don't finalize it.
       (unless (climi::sheet-direct-mirror sheet)
         (return-from medium-finish-output nil))
       (let ((builder (mirror-display-list-builder mirror)))
-        (format *error-output* "~&[FINISH-OUTPUT] builder=~A~%" builder)
+        (log:debug :render "medium-finish-output: builder=~A" builder)
         (when builder
           (handler-case
               (let ((dl (frs:create-display-list builder)))
@@ -557,10 +559,10 @@ Thread Contract: Called on UI thread."
                 (setf (mirror-display-list-builder mirror) nil)
                 ;; Publish DL for the main thread.  Drops any unconsumed
                 ;; previous DL (mirror-store-pending-dl releases it).
-                (format *error-output* "~&[FINISH-OUTPUT] published DL ~A~%" dl)
+                (log:debug :render "Published DL ~A" dl)
                 (mirror-store-pending-dl mirror dl))
             (error (e)
-              (format *error-output* "~&[FINISH-OUTPUT] error: ~A~%" e)
+              (log:error :render "medium-finish-output error: ~A" e)
               ;; Avoid leaking the builder on error.
               (frs:release-display-list-builder builder)
               (setf (mirror-display-list-builder mirror) nil))))))))

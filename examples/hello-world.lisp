@@ -37,15 +37,15 @@
                 :align-x :center
                 :text-style (make-text-style :sans-serif :bold 24))
     ;; Clickable circle
-    (draw-circle* pane (/ w 2) (+ h 100) 60 :ink +blue+ :filled t)
+    (draw-circle* pane (/ w 2) (/ h 2) 60 :ink +blue+ :filled t)
     (draw-text* pane "Click me!"
-                (/ w 2) (+ h 100)
+                (/ w 2) (/ h 2)
                 :align-x :center :align-y :center
                 :text-style (make-text-style :sans-serif :bold 16)
                 :ink +white+)
     ;; Click count
     (draw-text* pane (format nil "Clicks: ~D" *hello-world-click-count*)
-                (/ w 2) (+ h 180)
+                (/ w 2) (+ (/ h 2) 80)
                 :align-x :center
                 :text-style (make-text-style :sans-serif :roman 18))
     (finish-output pane)))

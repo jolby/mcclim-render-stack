@@ -62,6 +62,13 @@
     #:mirror-surface
     #:mirror-width
     #:mirror-height
+    #:mirror-logical-width
+    #:mirror-logical-height
+    #:mirror-display-list-builder
+    #:mirror-pending-dl
+    #:mirror-dl-lock
+    #:mirror-take-pending-dl
+    #:mirror-store-pending-dl
     #:register-mirror
     #:deregister-mirror
     #:find-mirror-by-window-id

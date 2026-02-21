@@ -213,13 +213,24 @@ mirror in the registry (for single-window applications)."
     (setf (slot-value port 'pointer)
           (make-instance 'render-stack-pointer :port port))))
 
+(defmethod climi::set-sheet-pointer-cursor
+    ((port render-stack-port) (sheet climi::mirrored-sheet-mixin) cursor)
+  "Set the pointer cursor when pointer enters a sheet.
+   Only sets if the pointer is currently over the sheet's mirror."
+  ;; XXX -- FIXME port to render stack
+  nil
+  #+(or)(let ((mirror (climi::sheet-direct-mirror sheet)))
+    (when mirror
+      (let ((focused-window-id (%sdl3:get-mouse-focus)))
+        (when (eql (impeller-mirror-window-id mirror) focused-window-id)
+          (setf (climi::pointer-cursor (climi::port-pointer port))
+                cursor))))))
+
+
 ;;; ============================================================================
 ;;; McCLIM Mirror Protocol
 ;;; ============================================================================
 ;;;
-;;; Defined here (not mirror.lisp) so render-stack-port exists as a class
-;;; before these methods are compiled.
-
 (defmethod realize-mirror ((port render-stack-port) (sheet mirrored-sheet-mixin))
   "Create a render-stack-mirror for SHEET and register it with PORT.
 
@@ -266,14 +277,22 @@ Thread Contract: Called on UI thread. SDL3/GL ops dispatched via runner."
                                           width height))
                               (window-id (%sdl3:get-window-id
                                           (rs-sdl3::sdl3-window-handle window)))
+                              ;; Window is created hidden (SDL_WINDOW_HIDDEN).
+                              ;; Physical pixel dims (SDL_GetWindowSizeInPixels) are
+                              ;; unreliable until the compositor maps the window.
+                              ;; Use logical dims as the initial mirror-width/height.
+                              ;; perform-first-frame-reveal will call invalidate-mirror-surface
+                              ;; after show-sdl3-window to refresh to true physical dims.
                               (m         (make-instance 'render-stack-mirror
-                                                        :sdl-window window
-                                                        :window-id  window-id
-                                                        :gl-context (rs-sdl3::sdl3-window-gl-context window)
-                                                        :port       port
-                                                        :sheet      sheet
-                                                        :width      width
-                                                        :height     height)))
+                                                        :sdl-window     window
+                                                        :window-id      window-id
+                                                        :gl-context     (rs-sdl3::sdl3-window-gl-context window)
+                                                        :port           port
+                                                        :sheet          sheet
+                                                        :width          width
+                                                        :height         height
+                                                        :logical-width  width
+                                                        :logical-height height)))
                          (register-mirror port m)
                          m))
                      :blocking t

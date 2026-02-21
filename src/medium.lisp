@@ -68,13 +68,39 @@
       (setf (medium-paint medium) (frs:make-paint))))
 
 (defun %get-medium-builder (medium)
-  "Get the current display list builder from the port's runtime.
-    Returns nil if not currently in a frame (shouldn't happen in normal use).
-    
-    Phase 1: Stub — returns nil. Phase 2 will implement display list construction."
-   (declare (ignore medium))
-   ;; TODO: Implement display list builder acquisition from runtime
-   nil)
+  "Get or create the Impeller display list builder for the current McCLIM frame.
+
+Returns the builder stored on the medium's mirror, creating it if needed.
+The builder is a persistent recording context: drawing ops accumulate into it
+across multiple calls until medium-finish-output finalizes it into a display list.
+
+Returns NIL if no render-stack-mirror is associated with this medium's sheet."
+  (let* ((sheet (medium-sheet medium))
+         (mirror (when sheet (climi::sheet-mirror sheet))))
+    (unless (typep mirror 'render-stack-mirror)
+      (format *error-output* "~&[BUILDER] no render-stack-mirror: sheet=~A mirror=~A (type ~A)~%"
+              (type-of sheet) mirror (type-of mirror))
+      (return-from %get-medium-builder nil))
+    (or (mirror-display-list-builder mirror)
+        ;; First drawing op for this frame — create a fresh builder.
+        (let ((builder (frs:make-display-list-builder)))
+          ;; Apply HiDPI scale so McCLIM logical coordinates map to physical pixels.
+          ;; On 1x displays scale=1.0 (identity). On 2x, scale=2.0.
+          (let* ((phys-w  (mirror-width mirror))
+                 (phys-h  (mirror-height mirror))
+                 (log-w   (mirror-logical-width mirror))
+                 (log-h   (mirror-logical-height mirror))
+                 (scale-x (if (and (plusp log-w) (plusp log-h))
+                              (float (/ phys-w log-w) 1.0f0)
+                              1.0f0))
+                 (scale-y (if (and (plusp log-w) (plusp log-h))
+                              (float (/ phys-h log-h) 1.0f0)
+                              1.0f0)))
+            (format *error-output* "~&[BUILDER] creating builder: phys=~Ax~A log=~Ax~A scale=~Ax~A~%"
+                    phys-w phys-h log-w log-h scale-x scale-y)
+            (frs:display-list-builder-set-transform builder scale-x scale-y 0.0f0 0.0f0))
+          (setf (mirror-display-list-builder mirror) builder)
+          builder))))
 
 ;;; CLIM Internal Functions
 
@@ -472,29 +498,78 @@
 
 ;;; Medium state
 
+(defmethod climi::invoke-with-output-buffered
+    ((medium render-stack-medium) continuation &optional (buffered-p t))
+  "Wrap the repaint continuation with Impeller DL lifecycle.
+
+McCLIM calls this (via the output-recording-stream trampoline) to wrap
+display/repaint operations. The unwind-protect ensures medium-finish-output
+is always called after drawing ops accumulate in the builder, publishing
+the DL to the mirror for the main thread to rasterize.
+
+Thread Contract: Called on UI thread."
+  (let ((was-buffering (medium-buffering-output-p medium)))
+    (cond
+      ((and buffered-p (not was-buffering))
+       ;; Top-level buffered entry: run ops, then finalize DL.
+       (setf (medium-buffering-output-p medium) t)
+       (unwind-protect
+            (funcall continuation)
+         (medium-finish-output medium)
+         (setf (medium-buffering-output-p medium) nil)))
+      ((and (not buffered-p) was-buffering)
+       ;; Forced flush: finalize current DL, then run continuation unbuffered.
+       (medium-finish-output medium)
+       (setf (medium-buffering-output-p medium) nil)
+       (funcall continuation))
+      (t
+       ;; Nested call or no change in buffering state.
+       (funcall continuation)))))
+
 (defmethod medium-finish-output ((medium render-stack-medium))
-  "Ensure all drawing is complete.
+  "Finalize the current frame's display list and publish it for rasterization.
 
-   For render-stack, the render engine runs continuously and handles
-   buffer swapping automatically. This method is a no-op in Phase 1.
+Called by McCLIM after the display function completes (e.g., via finish-output
+on the pane, or by invoke-with-output-buffered's unwind-protect).
 
-   In Phase 4 with full McCLIM integration, this will coordinate with
-   the render engine to ensure drawing commands are processed."
-  ;; Phase 1: No-op - render engine handles frame presentation
-  ;; Phase 4: Will signal render engine to present current frame
-  )
+Only finalizes and publishes from the top-level mirrored sheet.  Sub-pane
+mediums accumulate into the shared mirror builder but are no-ops here —
+the builder accumulates all pane content and is finalized once by the
+top-level sheet (identified by having a direct mirror).
+
+Thread Contract: Called on UI thread."
+  (let* ((sheet  (medium-sheet medium))
+         (mirror (when sheet (climi::sheet-mirror sheet))))
+    (format *error-output* "~&[FINISH-OUTPUT] sheet=~A mirror-type=~A~%"
+            (type-of sheet) (type-of mirror))
+    (when (typep mirror 'render-stack-mirror)
+      ;; Only finalize/publish from the top-level mirrored sheet.
+      ;; Sub-pane mediums draw into the shared builder but don't finalize it.
+      (unless (climi::sheet-direct-mirror sheet)
+        (return-from medium-finish-output nil))
+      (let ((builder (mirror-display-list-builder mirror)))
+        (format *error-output* "~&[FINISH-OUTPUT] builder=~A~%" builder)
+        (when builder
+          (handler-case
+              (let ((dl (frs:create-display-list builder)))
+                ;; Builder is spent — release it and clear the slot.
+                (frs:release-display-list-builder builder)
+                (setf (mirror-display-list-builder mirror) nil)
+                ;; Publish DL for the main thread.  Drops any unconsumed
+                ;; previous DL (mirror-store-pending-dl releases it).
+                (format *error-output* "~&[FINISH-OUTPUT] published DL ~A~%" dl)
+                (mirror-store-pending-dl mirror dl))
+            (error (e)
+              (format *error-output* "~&[FINISH-OUTPUT] error: ~A~%" e)
+              ;; Avoid leaking the builder on error.
+              (frs:release-display-list-builder builder)
+              (setf (mirror-display-list-builder mirror) nil))))))))
 
 (defmethod medium-force-output ((medium render-stack-medium))
-  "Force any pending output to the display.
-
-   For render-stack, drawing happens immediately when medium methods
-   are called during the render delegate's draw callback.
-
-   In Phase 4 with full McCLIM integration, this will trigger an
-   immediate frame render if needed."
-  ;; Phase 1: No-op - drawing is immediate within render delegate callback
-  ;; Phase 4: Will trigger immediate frame presentation
+  "Force any pending output to the display — no-op for render-stack.
+The render loop on the main thread handles presentation."
   )
+
 
 (defmethod medium-clear-area ((medium render-stack-medium) left top right bottom)
   "Clear a rectangular area using the medium's background color."

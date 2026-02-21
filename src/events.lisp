@@ -48,7 +48,9 @@ Dispatches on EVENT-TYPE keyword using the appropriate rs-sdl3 accessor."
     ((:window-close-requested :window-exposed :window-resized
       :window-shown :window-hidden :window-moved
       :window-focus-gained :window-focus-lost
-      :window-mouse-enter :window-mouse-leave)
+      :window-mouse-enter :window-mouse-leave
+      :window-pixel-size-changed :window-display-scale-changed
+      :window-first)
      (rs-sdl3:window-event-window-id event-ptr))
     ((:key-down :key-up)
      (rs-sdl3:keyboard-event-window-id event-ptr))

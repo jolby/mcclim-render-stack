@@ -160,8 +160,8 @@ Phase 2: Will inspect the port's dirty-sheet state.
 
 Thread Contract: MUST be called on UI thread."
   (rs-internals:assert-ui-thread render-delegate-begin-frame)
-  (format *error-output* "~&[DIAG] render-delegate-begin-frame: frame ~A~%"
-          frame-number)
+  ;; (format *error-output* "~&[DIAG] render-delegate-begin-frame: frame ~A~%"
+  ;;         frame-number)
   ;; Phase 1: always produce a frame.
   t)
 
@@ -185,28 +185,42 @@ Thread Contract: MUST be called on UI thread."
     ((runtime render-stack-runtime) pipeline-item)
   "Called on main thread to rasterize.  Renders each registered mirror.
 
+For each mirror: if a pending display list is available (published by
+medium-finish-output on the UI thread), consume it and draw it to the
+mirror's FBO surface.  Falls back to the test pattern if no DL is pending.
+
 Thread Contract: MUST be called on main thread."
   (declare (ignore pipeline-item))
   (rs-internals:assert-main-thread render-delegate-draw)
   (let ((port (runtime-port runtime)))
     (unless port (return-from render-delegate-draw nil))
-    ;; Debug frame limit — hard exit after N frames so we don't need kill -9.
-    ;; sb-ext:exit :abort t is a POSIX _exit() that kills all threads immediately.
-    ;; This is intentionally nuclear: clean shutdown requires McCLIM to cooperate
-    ;; (frame-exit → event loop → runner-stop), which isn't wired up yet.
     (when *debug-frame-limit*
       (let ((n (incf (runtime-debug-frame-count runtime))))
         (when (>= n *debug-frame-limit*)
-          (format *error-output* "~&[DEBUG] Frame limit ~A reached — hard exit.~%"
-                  *debug-frame-limit*)
+          (log:info :debug "Frame limit ~A reached — hard exit." *debug-frame-limit*)
           (sb-ext:exit :code 0 :abort t))))
     (let ((mirrors (collect-registered-mirrors port)))
-      (format *error-output* "~&[DIAG] render-delegate-draw: window-count=~A~%"
-              (length mirrors))
       (dolist (mirror mirrors)
-        (draw-test-pattern-for-mirror mirror))
-      (dolist (mirror mirrors)
-        (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror))))))
+        (let ((dl (mirror-take-pending-dl mirror)))
+          (cond
+            ;; First-frame path: window is hidden. Run staged reveal sequence.
+            ((not (mirror-first-frame-drawn-p mirror))
+             (perform-first-frame-reveal mirror dl))
+            ;; McCLIM produced a display list — draw it and swap.
+            (dl
+             (handler-case
+                 (let ((surface (get-or-create-mirror-surface mirror)))
+                   (when surface
+                     (rs-internals:without-float-traps
+                       (frs:surface-draw-display-list surface dl))))
+               (error (e)
+                 (log:error :render "Error drawing display list: ~A" e)))
+             (frs:release-display-list dl)
+             (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror)))
+            ;; No DL from McCLIM — draw test pattern and swap.
+            (t
+             (draw-test-pattern-for-mirror mirror)
+             (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror)))))))))
 
 ;;; ============================================================================
 ;;; Direct Rendering (Phase 1)
@@ -222,6 +236,50 @@ Takes a lock snapshot to avoid holding the lock during rendering."
                  (push mirror mirrors))
                (port-window-registry port))
       mirrors)))
+
+(defun perform-first-frame-reveal (mirror dl)
+  "Execute the staged first-frame reveal sequence for MIRROR.
+
+DL is a pending display list (or NIL — test pattern used if NIL).
+Window is hidden at call time.
+
+Sequence:
+  1. Draw content with initial (logical) dims — window still hidden.
+  2. SDL_GL_SwapWindow — content committed to framebuffer.
+  3. SDL_ShowWindow   — window appears already painted, no blank flash.
+  4. Center window    — physical dims reliable after compositor maps window.
+  5. invalidate-mirror-surface — refreshes mirror-width/height from SDL3.
+     Next frame creates FBO at correct physical dims (handles HiDPI).
+  6. Mark mirror-first-frame-drawn-p T.
+
+Thread Contract: MUST be called on main thread."
+  (rs-internals:assert-main-thread perform-first-frame-reveal)
+  ;; 1. Draw content (window hidden — user doesn't see this pass).
+  (if dl
+      (progn
+        (handler-case
+            (let ((surface (get-or-create-mirror-surface mirror)))
+              (when surface
+                (rs-internals:without-float-traps
+                  (frs:surface-draw-display-list surface dl))))
+          (error (e)
+            (log:error :render "First-frame: DL draw error: ~A" e)))
+        (frs:release-display-list dl))
+      (draw-test-pattern-for-mirror mirror))
+  ;; 2. Commit content to framebuffer (window still hidden).
+  (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror))
+  ;; 3. Show — window appears with content already rendered; no blank flash.
+  (rs-sdl3:show-sdl3-window (mirror-sdl-window mirror))
+  ;; 4. Center — compositor has mapped the window; physical dims now reliable.
+  (rs-sdl3:center-sdl3-window (mirror-sdl-window mirror))
+  ;; 5. Refresh physical pixel dims. Next frame recreates FBO at correct size.
+  (invalidate-mirror-surface mirror)
+  ;; 6. Mark revealed — normal render path takes over.
+  (setf (mirror-first-frame-drawn-p mirror) t)
+  (log:info :mcclim-render-stack "First frame revealed: win-id=~A logical=~Ax~A physical=~Ax~A"
+            (mirror-window-id mirror)
+            (mirror-logical-width mirror) (mirror-logical-height mirror)
+            (mirror-width mirror) (mirror-height mirror)))
 
 (defun draw-test-pattern-for-mirror (mirror)
   "Draw a test pattern (white background + blue rectangle) on MIRROR.

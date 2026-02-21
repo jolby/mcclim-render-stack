@@ -85,13 +85,25 @@ Thread Contract: MUST be called on main thread."
                   (let ((sheet (find-sheet-by-window-id port window-id)))
                     (cond
                       (sheet
+                       ;; Handle resize directly — invalidate the mirror surface so
+                       ;; the next frame creates a correctly-sized FBO.
+                       (when (member event-type '(:window-pixel-size-changed
+                                                  :window-display-scale-changed))
+                         (let ((mirror (find-mirror-by-window-id port window-id)))
+                           (when mirror
+                             (format *error-output* "~&[EVENT] resize win=~A, invalidating surface~%"
+                                     window-id)
+                             (invalidate-mirror-surface mirror))))
                        (let ((clim-event (translate-sdl3-event port ev)))
                          (if clim-event
                              (progn
                                (format *error-output* "~&[EVENT] distributing ~A to sheet ~A~%"
                                        (type-of clim-event) sheet)
                                (distribute-event port clim-event))
-                             (unless (member event-type '(:mouse-motion :mouse-wheel))
+                             (unless (member event-type '(:mouse-motion :mouse-wheel
+                                                          :window-pixel-size-changed
+                                                          :window-display-scale-changed
+                                                          :window-first))
                                (format *error-output* "~&[EVENT] no CLIM translation for ~A~%"
                                        event-type)))))
                       (t

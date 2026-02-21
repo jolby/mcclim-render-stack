@@ -48,11 +48,41 @@ Created by get-or-create-mirror-surface, invalidated on resize, released on dest
    (width
     :initarg  :width
     :accessor mirror-width
-    :documentation "Framebuffer width in pixels.")
+    :documentation "Framebuffer width in physical pixels (SDL_GetWindowSizeInPixels).")
    (height
     :initarg  :height
     :accessor mirror-height
-    :documentation "Framebuffer height in pixels."))
+    :documentation "Framebuffer height in physical pixels (SDL_GetWindowSizeInPixels).")
+   (logical-width
+    :initarg  :logical-width
+    :accessor mirror-logical-width
+    :documentation "Window width in logical (device-independent) pixels from frame geometry.")
+   (logical-height
+    :initarg  :logical-height
+    :accessor mirror-logical-height
+    :documentation "Window height in logical (device-independent) pixels from frame geometry.")
+   (display-list-builder
+    :initform nil
+    :accessor mirror-display-list-builder
+    :documentation "Active Impeller display list builder for the current McCLIM frame.
+Created lazily by %get-medium-builder on the UI thread.
+Finalized (builder->DL) by medium-finish-output, then set back to NIL.")
+   (pending-dl
+    :initform nil
+    :accessor mirror-pending-dl
+    :documentation "Completed Impeller display list waiting to be rasterized by the main thread.
+Protected by dl-lock. Set by mirror-store-pending-dl (UI thread),
+consumed and cleared by mirror-take-pending-dl (main thread).")
+   (dl-lock
+    :initform (bt2:make-lock :name "mirror-dl")
+    :reader mirror-dl-lock
+    :documentation "Lock protecting pending-dl for cross-thread access.")
+   (first-frame-drawn-p
+    :initform nil
+    :accessor mirror-first-frame-drawn-p
+    :documentation "T after the first complete frame (draw + gl-swap-buffer + show) has executed.
+On nil→T transition the window is shown and mirror-width/height refreshed from SDL3.
+The render-delegate-draw first-frame path sets this after perform-first-frame-reveal."))
   (:documentation
    "The canonical McCLIM mirror for an SDL3 window.
 
@@ -136,5 +166,33 @@ Thread Contract: MUST be called on the main thread."
     (when window
       (setf (mirror-width  mirror) (rs-host:framebuffer-width  window)
             (mirror-height mirror) (rs-host:framebuffer-height window)))))
+
+;;; ============================================================================
+;;; Cross-Thread Display List Handoff
+;;; ============================================================================
+;;;
+;;; The UI thread builds a display list (via %get-medium-builder /
+;;; medium-finish-output) and publishes it here.  The main thread
+;;; consumes it in render-delegate-draw.
+
+(defun mirror-take-pending-dl (mirror)
+  "Atomically take (and clear) MIRROR's pending display list.
+Returns the DL (or NIL), transferring ownership to the caller.
+Thread Contract: May be called from any thread. Acquires dl-lock."
+  (bt2:with-lock-held ((mirror-dl-lock mirror))
+    (let ((dl (mirror-pending-dl mirror)))
+      (setf (mirror-pending-dl mirror) nil)
+      dl)))
+
+(defun mirror-store-pending-dl (mirror new-dl)
+  "Store NEW-DL as MIRROR's pending display list.
+If a previous DL was never consumed, it is released immediately.
+Thread Contract: May be called from any thread. Acquires dl-lock."
+  (let (old-dl)
+    (bt2:with-lock-held ((mirror-dl-lock mirror))
+      (setf old-dl (mirror-pending-dl mirror)
+            (mirror-pending-dl mirror) new-dl))
+    (when old-dl
+      (frs:release-display-list old-dl))))
 
 ;;; realize-mirror and destroy-mirror are defined in port.lisp.

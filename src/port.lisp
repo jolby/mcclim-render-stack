@@ -55,7 +55,14 @@ All access must hold port-registry-lock.")
    (modifier-state
     :accessor port-modifier-state
     :initform 0
-    :documentation "Current keyboard modifier state bitmask."))
+    :documentation "Current keyboard modifier state bitmask.")
+
+   (paragraph-cache
+    :accessor port-paragraph-cache
+    :initform (make-paragraph-cache)
+    :documentation "LRU cache of Impeller paragraph objects, keyed by text+style+ink.
+Shared across all mediums on this port. Cache owns paragraph lifecycle;
+entries are released via eviction callback or on port destruction."))
   (:documentation "McCLIM port using render-stack (SDL3 + Impeller).
 
 Threading Model:
@@ -128,6 +135,7 @@ Does NOT stop the runner, shut down the engine, or quit SDL3 —
 those are application-level concerns managed at startup/shutdown."
   (setf (port-quit-requested port) t)
   (log:debug :port "destroy-port: quit requested")
+  (clear-paragraph-cache (port-paragraph-cache port))
 
   ;; Destroy all remaining mirrors.
   ;; Collect under lock, then destroy without holding it.

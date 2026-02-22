@@ -12,11 +12,12 @@
                :bordeaux-threads)
   :components ((:module "src"
                   :components ((:file "package")
+                               (:file "cache"         :depends-on ("package"))
                                (:file "events"        :depends-on ("package" "pointer"))
                                (:file "mirror"        :depends-on ("package" "events"))
                                (:file "runtime"       :depends-on ("package" "mirror"))
                                (:file "runner-phases" :depends-on ("package" "runtime" "events"))
-                               (:file "port"          :depends-on ("package" "pointer" "mirror" "runtime" "runner-phases"))
+                               (:file "port"          :depends-on ("package" "pointer" "mirror" "runtime" "runner-phases" "cache"))
                                (:file "pointer"       :depends-on ("package"))
                                (:file "designs"       :depends-on ("package"))
                                (:file "output-recording"       :depends-on ("package"))

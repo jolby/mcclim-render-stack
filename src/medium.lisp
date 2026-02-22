@@ -285,49 +285,91 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
         (:roman (setf weight :weight400))))
     (values weight slant)))
 
-(defun %configure-paragraph-style (style medium text-style paint)
-  "Configure an Impeller paragraph style from CLIM text style and paint.
-   Merges with medium's default text style, applies HiDPI scaling to font size."
-  (let* ((ts (or text-style (medium-text-style medium)))
+(defun %resolve-text-style-params (medium text-style)
+  "Resolve TEXT-STYLE against MEDIUM defaults and map to Impeller font parameters.
+   Returns (values mapped-family mapped-size weight slant)."
+  (let* ((ts      (or text-style (medium-text-style medium)))
          (default (medium-default-text-style medium))
-         (scale (%get-medium-scale medium)))
+         (merged  (merge-text-styles ts default))
+         (scale   (%get-medium-scale medium)))
     (multiple-value-bind (family face size)
-        (text-style-components (merge-text-styles ts default))
-      (multiple-value-bind (weight slant) (%map-clim-font-face face)
-        (let ((mapped-family (%map-clim-font-family family))
-              (mapped-size (%map-clim-font-size size scale)))
-          (frs:paragraph-style-set-foreground style paint)
-          (frs:paragraph-style-set-font-family style mapped-family)
-          (frs:paragraph-style-set-font-size style mapped-size)
-          (frs:paragraph-style-set-font-weight style weight)
-          (frs:paragraph-style-set-font-style style slant))))))
+        (text-style-components merged)
+      (multiple-value-bind (weight slant)
+          (%map-clim-font-face face)
+        (values (%map-clim-font-family family)
+                (%map-clim-font-size size scale)
+                weight
+                slant)))))
+
+(defun %paragraph-cache-key (substring mapped-family mapped-size weight slant width r g b a)
+  "Build an EQUAL-comparable cache key for an Impeller paragraph.
+   Color is included because Impeller bakes the foreground ink into the paragraph."
+  (list substring mapped-family mapped-size weight slant width r g b a))
+
+(defun %configure-paragraph-style (style mapped-family mapped-size weight slant paint)
+  "Apply pre-resolved font parameters and PAINT to Impeller paragraph STYLE."
+  (frs:paragraph-style-set-foreground  style paint)
+  (frs:paragraph-style-set-font-family style mapped-family)
+  (frs:paragraph-style-set-font-size   style mapped-size)
+  (frs:paragraph-style-set-font-weight style weight)
+  (frs:paragraph-style-set-font-style  style slant))
+
+(defun %build-paragraph (typo-ctx style substring width)
+  "Build and lay out an Impeller paragraph for SUBSTRING at layout WIDTH.
+   Returns (values paragraph height baseline width).
+   Caller is responsible for releasing the paragraph."
+  (frs:with-paragraph-builder (builder typo-ctx)
+    (frs:paragraph-builder-push-style builder style)
+    (frs:paragraph-builder-add-text   builder substring)
+    (frs:paragraph-builder-pop-style  builder)
+    (let* ((p (frs:paragraph-builder-build builder (float width 1.0f0)))
+           (w (frs:paragraph-get-longest-line-width p))
+           (h (frs:paragraph-get-height p))
+           (b (frs:paragraph-get-alphabetic-baseline p)))
+      (values p h b w))))
 
 (defun %layout-paragraph (medium string text-style start end &key (width 10000.0f0))
-  "Layout a paragraph for STRING with TEXT-STYLE on MEDIUM.
-   Returns (values paragraph height baseline width).
-   Caller is responsible for releasing the returned paragraph."
-  (let* ((port (port medium))
-         (typo-ctx (runtime-typography-context (port-runtime port)))
-         (substring (subseq string (or start 0) (or end (length string))))
-         (paint (%get-medium-paint medium))
-         (ink (medium-ink medium))
-         (style (frs:make-paragraph-style)))
+  "Return an Impeller paragraph for STRING with TEXT-STYLE on MEDIUM.
+   The paragraph is owned by the port's paragraph cache — do NOT release it.
+   Returns (values paragraph height baseline width)."
+  (let* ((port      (port medium))
+         (cache     (port-paragraph-cache port))
+         (substring (subseq string (or start 0) (or end (length string)))))
+    (multiple-value-bind (mapped-family mapped-size weight slant)
+        (%resolve-text-style-params medium text-style)
+      (multiple-value-bind (r g b a)
+          (clim-ink-to-impeller-color (medium-ink medium) medium)
+        (let* ((key    (%paragraph-cache-key substring mapped-family mapped-size
+                                             weight slant (float width 1.0f0) r g b a))
+               (cached (cache-get cache key)))
+          (if cached
+              (values (cached-paragraph-paragraph cached)
+                      (cached-paragraph-height    cached)
+                      (cached-paragraph-baseline  cached)
+                      (cached-paragraph-width     cached))
+              (%build-and-cache-paragraph
+               port cache key medium mapped-family mapped-size weight slant
+               substring width r g b a)))))))
+
+(defun %build-and-cache-paragraph (port cache key medium
+                                   mapped-family mapped-size weight slant
+                                   substring width r g b a)
+  "Build a new Impeller paragraph on a cache miss, store it, and return its metrics.
+   Returns (values paragraph height baseline width)."
+  (let ((typo-ctx (runtime-typography-context (port-runtime port)))
+        (paint    (%get-medium-paint medium))
+        (style    (frs:make-paragraph-style)))
     (unwind-protect
          (progn
-           ;; Set ink color on paint for text foreground
-           (multiple-value-bind (r g b a)
-               (clim-ink-to-impeller-color ink medium)
-             (frs:paint-set-color paint r g b a))
-           (%configure-paragraph-style style medium text-style paint)
-           (frs:with-paragraph-builder (builder typo-ctx)
-             (frs:paragraph-builder-push-style builder style)
-             (frs:paragraph-builder-add-text builder substring)
-             (frs:paragraph-builder-pop-style builder)
-             (let* ((p (frs:paragraph-builder-build builder (float width 1.0f0)))
-                    (w (frs:paragraph-get-longest-line-width p))
-                    (h (frs:paragraph-get-height p))
-                    (b (frs:paragraph-get-alphabetic-baseline p)))
-               (values p h b w))))
+           (frs:paint-set-color paint r g b a)
+           (%configure-paragraph-style style mapped-family mapped-size weight slant paint)
+           (multiple-value-bind (p h b w)
+               (%build-paragraph typo-ctx style substring width)
+             (cache-put cache key
+                        (make-cached-paragraph :paragraph p :height h :baseline b :width w)
+                        (lambda (entry)
+                          (frs:release-paragraph (cached-paragraph-paragraph entry))))
+             (values p h b w)))
       (frs:release-paragraph-style style))))
 
 (defun %adjust-text-x (x align-x width)
@@ -593,9 +635,7 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
              (%layout-paragraph medium string nil start end)
            (let ((draw-x (%adjust-text-x x align-x width))
                  (draw-y (%adjust-text-y y align-y height baseline)))
-             (unwind-protect
-                  (frs:draw-paragraph builder paragraph draw-x draw-y)
-               (frs:release-paragraph paragraph))))))))
+             (frs:draw-paragraph builder paragraph draw-x draw-y)))))))
 
 ;;; Medium state
 
@@ -696,12 +736,12 @@ The render loop on the main thread handles presentation."
 ;;; These methods provide text measurement for layout calculations
 
 (defun %text-style-to-paragraph-metrics (text-style medium string)
-   "Calculate metrics for TEXT-STYLE by laying out STRING.
-    Returns (values height baseline width)."
-   (multiple-value-bind (paragraph height baseline width)
-       (%layout-paragraph medium string text-style nil nil)
-     (frs:release-paragraph paragraph)
-     (values height baseline width)))
+  "Calculate metrics for TEXT-STYLE by laying out STRING.
+   Returns (values height baseline width)."
+  (multiple-value-bind (paragraph height baseline width)
+      (%layout-paragraph medium string text-style nil nil)
+    (declare (ignore paragraph))
+    (values height baseline width)))
 
 (defmethod text-style-ascent ((text-style text-style) (medium render-stack-medium))
   "Return the ascent (distance above baseline) in pixels."
@@ -749,13 +789,12 @@ The render loop on the main thread handles presentation."
    Returns five values: width, height, final-x, final-y, baseline."
   (multiple-value-bind (paragraph height baseline width)
       (%layout-paragraph medium string text-style start end)
-    (unwind-protect
-         (values (float width 1.0f0)
-                 (float height 1.0f0)
-                 (float width 1.0f0)
-                 0.0f0
-                 (float baseline 1.0f0))
-      (frs:release-paragraph paragraph))))
+    (declare (ignore paragraph))
+    (values (float width 1.0f0)
+            (float height 1.0f0)
+            (float width 1.0f0)
+            0.0f0
+            (float baseline 1.0f0))))
 
 (defmethod medium-beep ((medium render-stack-medium))
   ;; Produce an audible beep

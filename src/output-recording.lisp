@@ -27,10 +27,33 @@
    (dl-generation
     :initform 0
     :accessor cached-dl-generation
-    :documentation "Generation counter for debugging/cache verification."))
+    :documentation "Generation counter for debugging/cache verification.")
+   (%dl-ref
+    :initform (cons nil nil)
+    :accessor cached-dl-ref
+    :documentation "Cons cell used as indirection for the GC finalizer.
+    car holds the current DL pointer (or NIL). The finalizer captures this
+    cell, not the record, so it does not prevent GC of the record itself."))
   (:documentation
    "Mixin for output records that maintain a cached Impeller DisplayList.
     Implements dirty tracking via mark-needs-rebuild and standard CLIM hooks."))
+
+;;; GC finalizer — safety net for orphaned records that bypass lost-sheet
+
+(defmethod initialize-instance :after ((record render-stack-cached-output-mixin) &key)
+  ;; Capture only the cons cell, not RECORD, so the finalizer does not
+  ;; retain a reference that would prevent GC.
+  (let ((dl-ref (slot-value record '%dl-ref)))
+    (tg:finalize record
+                 (lambda ()
+                   (let ((dl (car dl-ref)))
+                     (when dl
+                       (frs:release-display-list dl)))))))
+
+(defmethod (setf cached-display-list) :after
+    (new-dl (record render-stack-cached-output-mixin))
+  ;; Keep the finalizer's indirection cell in sync with the actual slot.
+  (setf (car (cached-dl-ref record)) new-dl))
 
 ;;; ============================================================================
 ;;; Dirty Tracking Protocol

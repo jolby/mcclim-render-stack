@@ -5,7 +5,8 @@
                     (:rs-host :render-stack-host)
                     (:rs-sdl3 :render-stack-sdl3)
                     (:rs-internals :render-stack-internals)
-                    (:log :org.shirakumo.verbose))
+                    (:log :org.shirakumo.verbose)
+                    (:tg :trivial-garbage))
   (:import-from :climi
                 #:standard-pointer
                 #:pointer-sheet

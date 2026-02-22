@@ -6,7 +6,7 @@
 ;;;;
 ;;;; Press ESC or close window to exit.
 
-(ql:quickload :mcclim-render-stack :silent t)
+(ql:quickload :mcclim-render-stack :silent t :force t)
 
 ;;;; Load SDL3 native libraries (required before creating port)
 (cffi:define-foreign-library

@@ -435,8 +435,7 @@ active clip region. No-op (zero save/restore overhead) when clip is +everywhere+
            (with-bounding-rectangle* (l tp r bt) dc
              (frs:display-list-builder-clip-rect
               ,b (float l 1.0f0) (float tp 1.0f0)
-              (float (abs (- r l)) 1.0f0) (float (abs (- bt tp)) 1.0f0)
-              :intersect))))
+              (float (abs (- r l)) 1.0f0) (float (abs (- bt tp)) 1.0f0)))))
        (unwind-protect
             (progn ,@body)
          (when ,activep

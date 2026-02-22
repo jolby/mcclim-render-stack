@@ -188,8 +188,7 @@
                           builder
                           (float left 1.0f0) (float top 1.0f0)
                           (float (abs (- right left)) 1.0f0)
-                          (float (abs (- bottom top)) 1.0f0)
-                          :intersect)))
+                          (float (abs (- bottom top)) 1.0f0))))
                      (when (or (/= x-offset 0) (/= y-offset 0))
                        (frs:display-list-builder-translate
                         builder (float x-offset 1.0f0) (float y-offset 1.0f0)))

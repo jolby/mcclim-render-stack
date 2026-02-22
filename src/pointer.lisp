@@ -127,31 +127,5 @@
     (5 +pointer-wheel-down+)
     (t climi::+pointer-no-button+)))
 
-;;; ============================================================================
-;;; SDL3 Modifier to CLIM Modifier Conversion
-;;; ============================================================================
-
-(defun sdl3-mod-to-clim-mod (sdl3-mod)
-  "Convert SDL3 modifier bitmask to CLIM modifier state."
-  (let ((mod 0))
-    (when (logtest sdl3-mod 1)   ; KMOD_LSHIFT
-      (setf mod (logior mod +shift-key+)))
-    (when (logtest sdl3-mod 2)   ; KMOD_RSHIFT
-      (setf mod (logior mod +shift-key+)))
-    (when (logtest sdl3-mod 4)   ; KMOD_LCTRL
-      (setf mod (logior mod +control-key+)))
-    (when (logtest sdl3-mod 8)   ; KMOD_RCTRL
-      (setf mod (logior mod +control-key+)))
-    (when (logtest sdl3-mod 16)  ; KMOD_LALT
-      (setf mod (logior mod +meta-key+)))
-    (when (logtest sdl3-mod 32)  ; KMOD_RALT
-      (setf mod (logior mod +meta-key+)))
-    (when (logtest sdl3-mod 64)  ; KMOD_LGUI (Super/Windows)
-      (setf mod (logior mod +super-key+)))
-    (when (logtest sdl3-mod 128) ; KMOD_RGUI
-      (setf mod (logior mod +super-key+)))
-    (when (logtest sdl3-mod 256) ; KMOD_NUM
-      (setf mod (logior mod +num-lock-key+)))
-    (when (logtest sdl3-mod 512) ; KMOD_CAPS
-      (setf mod (logior mod +lock-key+)))
-    mod))
+;;; sdl3-mod-to-clim-mod is defined in events.lisp, which owns all SDL3
+;;; keyboard/modifier constants and is the sole caller of this function.

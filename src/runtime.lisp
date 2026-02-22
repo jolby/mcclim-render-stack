@@ -96,7 +96,7 @@ Implements the render-delegate protocol directly — no separate delegate."))
 Use for preconditions that indicate an unrecoverable configuration error."
   `(unless ,test
      (log:error ,category ,message ,@args)
-     (sb-ext:exit :code 1 :abort t)))
+     (uiop:quit 1)))
 
 ;;; ============================================================================
 ;;; Internal helpers
@@ -247,7 +247,7 @@ Thread Contract: MUST be called on main thread."
       (let ((n (incf (runtime-debug-frame-count runtime))))
         (when (>= n *debug-frame-limit*)
           (log:info :debug "Frame limit ~A reached — hard exit." *debug-frame-limit*)
-          (sb-ext:exit :code 0 :abort t))))
+          (uiop:quit 0))))
     (let ((mirrors (collect-registered-mirrors port)))
       (dolist (mirror mirrors)
         (let ((dl (mirror-take-pending-dl mirror)))

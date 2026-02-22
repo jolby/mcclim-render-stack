@@ -236,6 +236,119 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
     ;; Apply dash pattern (placeholder - not yet implemented)
     (apply-line-style-dashes paint line-style)))
 
+;;; Text style mapping helpers
+
+(defun %get-medium-scale (medium)
+  "Get the display scale factor for the medium's sheet.
+   Returns the HiDPI scale from the mirror, or 1.0 if unavailable."
+  (let* ((sheet (medium-sheet medium))
+         (mirror (when sheet (climi::sheet-mirror sheet))))
+    (if (and mirror (typep mirror 'render-stack-mirror))
+        (mirror-scale mirror)
+        1.0f0)))
+
+(defun %map-clim-font-family (family)
+  "Map CLIM font family keyword to a system font family name."
+  (case family
+    (:fix "Roboto Mono")
+    (:serif "Roboto Serif")
+    (:sans-serif "Roboto")
+    (otherwise (if (stringp family) family "Roboto"))))
+
+(defun %map-clim-font-size (size &optional (scale 1.0f0))
+  "Map CLIM font size keyword or number to a pixel size, applying display scale."
+  (let ((base-size
+         (typecase size
+           (number (float size 1.0f0))
+           (keyword (case size
+                      (:tiny 8.0f0)
+                      (:very-small 10.0f0)
+                      (:small 12.0f0)
+                      (:normal 14.0f0)
+                      (:large 18.0f0)
+                      (:very-large 24.0f0)
+                      (:huge 32.0f0)
+                      (otherwise 14.0f0)))
+           (otherwise 14.0f0))))
+    (* base-size scale)))
+
+(defun %map-clim-font-face (face)
+  "Map CLIM font face to Impeller weight and style.
+   Returns (values weight slant)."
+  (let ((weight :weight400)
+        (slant :normal)
+        (faces (if (listp face) face (list face))))
+    (dolist (f faces)
+      (case f
+        (:bold (setf weight :weight700))
+        ((:italic :oblique) (setf slant :italic))
+        (:roman (setf weight :weight400))))
+    (values weight slant)))
+
+(defun %configure-paragraph-style (style medium text-style paint)
+  "Configure an Impeller paragraph style from CLIM text style and paint.
+   Merges with medium's default text style, applies HiDPI scaling to font size."
+  (let* ((ts (or text-style (medium-text-style medium)))
+         (default (medium-default-text-style medium))
+         (scale (%get-medium-scale medium)))
+    (multiple-value-bind (family face size)
+        (text-style-components (merge-text-styles ts default))
+      (multiple-value-bind (weight slant) (%map-clim-font-face face)
+        (let ((mapped-family (%map-clim-font-family family))
+              (mapped-size (%map-clim-font-size size scale)))
+          (frs:paragraph-style-set-foreground style paint)
+          (frs:paragraph-style-set-font-family style mapped-family)
+          (frs:paragraph-style-set-font-size style mapped-size)
+          (frs:paragraph-style-set-font-weight style weight)
+          (frs:paragraph-style-set-font-style style slant))))))
+
+(defun %layout-paragraph (medium string text-style start end &key (width 10000.0f0))
+  "Layout a paragraph for STRING with TEXT-STYLE on MEDIUM.
+   Returns (values paragraph height baseline width).
+   Caller is responsible for releasing the returned paragraph."
+  (let* ((port (port medium))
+         (typo-ctx (runtime-typography-context (port-runtime port)))
+         (substring (subseq string (or start 0) (or end (length string))))
+         (paint (%get-medium-paint medium))
+         (ink (medium-ink medium))
+         (style (frs:make-paragraph-style)))
+    (unwind-protect
+         (progn
+           ;; Set ink color on paint for text foreground
+           (multiple-value-bind (r g b a)
+               (clim-ink-to-impeller-color ink medium)
+             (frs:paint-set-color paint r g b a))
+           (%configure-paragraph-style style medium text-style paint)
+           (frs:with-paragraph-builder (builder typo-ctx)
+             (frs:paragraph-builder-push-style builder style)
+             (frs:paragraph-builder-add-text builder substring)
+             (frs:paragraph-builder-pop-style builder)
+             (let* ((p (frs:paragraph-builder-build builder (float width 1.0f0)))
+                    (w (frs:paragraph-get-longest-line-width p))
+                    (h (frs:paragraph-get-height p))
+                    (b (frs:paragraph-get-alphabetic-baseline p)))
+               (values p h b w))))
+      (frs:release-paragraph-style style))))
+
+(defun %adjust-text-x (x align-x width)
+  "Adjust X coordinate based on horizontal alignment and paragraph width."
+  (float (case align-x
+           ((:left nil) x)
+           (:center (- x (/ width 2.0)))
+           (:right (- x width))
+           (otherwise x))
+         1.0f0))
+
+(defun %adjust-text-y (y align-y height baseline)
+  "Adjust Y coordinate based on vertical alignment and paragraph metrics."
+  (float (case align-y
+           ((:top nil) y)
+           (:center (- y (/ height 2.0)))
+           (:baseline (- y baseline))
+           (:bottom (- y height))
+           (otherwise y))
+         1.0f0))
+
 ;;; Device transformation helpers
 
 (defun %get-medium-transformation (medium)
@@ -472,76 +585,17 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
    toward-x/y and transform-glyphs are ignored in Phase 2."
    (declare (ignore toward-x toward-y transform-glyphs))
    (let* ((builder (%get-medium-builder medium))
-          (tr (%get-medium-transformation medium))
-          (port (port medium)))
+          (tr (%get-medium-transformation medium)))
      (when (and builder
                 (> (- (or end (length string)) (or start 0)) 0))
        (climi::with-transformed-position (tr x y)
-         (let* ((text-style (medium-text-style medium))
-                (substr (subseq string (or start 0) (or end (length string))))
-                (typo-ctx (runtime-typography-context (port-runtime port)))
-                (paint (%get-medium-paint medium))
-                (style (frs:make-paragraph-style)))
-           (unwind-protect
-                (progn
-                  ;; Configure text style
-                  (multiple-value-bind (family face size)
-                      (text-style-components text-style)
-                    (let ((mapped-family (case family
-                                           (:serif "Roboto Serif")
-                                           (:sans-serif "Roboto")
-                                           (:fix "Roboto Mono")
-                                           (t (or family "Roboto"))))
-                          (mapped-size (case size
-                                         (:tiny 8.0f0)
-                                         (:very-small 10.0f0)
-                                         (:small 12.0f0)
-                                         (:normal 14.0f0)
-                                         (:large 18.0f0)
-                                         (:very-large 24.0f0)
-                                         (:huge 32.0f0)
-                                         (t (float (or size 14) 1.0f0))))
-                          (weight (if (and (listp face) (member :bold face))
-                                      :weight700
-                                      :weight400))
-                          (slant (if (and (listp face) (member :italic face))
-                                     :italic
-                                     :normal)))
-                      (frs:paragraph-style-set-font-family style mapped-family)
-                      (frs:paragraph-style-set-font-size style mapped-size)
-                      (frs:paragraph-style-set-font-weight style weight)
-                      (frs:paragraph-style-set-font-style style slant)
-                      ;; Set text color from medium ink
-                      (multiple-value-bind (r g b a)
-                          (clim-ink-to-impeller-color (medium-ink medium) medium)
-                        (frs:paint-set-color paint r g b a)
-                        (frs:paragraph-style-set-foreground style paint))))
-                  ;; Build paragraph
-                  (frs:with-paragraph-builder (pb typo-ctx)
-                    (frs:paragraph-builder-push-style pb style)
-                    (frs:paragraph-builder-add-text pb substr)
-                    (frs:paragraph-builder-pop-style pb)
-                    (let ((paragraph (frs:paragraph-builder-build pb 10000.0f0)))
-                      (unwind-protect
-                           (let* ((width (frs:paragraph-get-longest-line-width paragraph))
-                                  (height (frs:paragraph-get-height paragraph))
-                                  (baseline (frs:paragraph-get-alphabetic-baseline paragraph))
-                                  (draw-x (float (case align-x
-                                                   ((:left nil) x)
-                                                   (:center (- x (/ width 2.0)))
-                                                   (:right (- x width))
-                                                   (t x))
-                                                 1.0f0))
-                                  (draw-y (float (case align-y
-                                                   ((:top nil) y)
-                                                   (:center (- y (/ height 2.0)))
-                                                   (:baseline (- y baseline))
-                                                   (:bottom (- y height))
-                                                   (t y))
-                                                 1.0f0)))
-                             (frs:draw-paragraph builder paragraph draw-x draw-y))
-                        (frs:release-paragraph paragraph)))))
-             (frs:release-paragraph-style style)))))))
+         (multiple-value-bind (paragraph height baseline width)
+             (%layout-paragraph medium string nil start end)
+           (let ((draw-x (%adjust-text-x x align-x width))
+                 (draw-y (%adjust-text-y y align-y height baseline)))
+             (unwind-protect
+                  (frs:draw-paragraph builder paragraph draw-x draw-y)
+               (frs:release-paragraph paragraph))))))))
 
 ;;; Medium state
 
@@ -642,50 +696,12 @@ The render loop on the main thread handles presentation."
 ;;; These methods provide text measurement for layout calculations
 
 (defun %text-style-to-paragraph-metrics (text-style medium string)
-   "Create a paragraph from text-style and string, return metrics.
+   "Calculate metrics for TEXT-STYLE by laying out STRING.
     Returns (values height baseline width)."
-   (let* ((port (port medium))
-          (typo-ctx (runtime-typography-context (port-runtime port)))
-         (paint (%get-medium-paint medium))
-         (style (frs:make-paragraph-style)))
-    (unwind-protect
-         (progn
-           ;; Configure style from text-style
-           (multiple-value-bind (family face size)
-               (text-style-components text-style)
-             (let ((mapped-family (case family
-                                    (:serif "Roboto Serif")
-                                    (:sans-serif "Roboto")
-                                    (:fix "Roboto Mono")
-                                    (t (or family "Roboto"))))
-                   (mapped-size (case size
-                                  (:tiny 8.0f0)
-                                  (:very-small 10.0f0)
-                                  (:small 12.0f0)
-                                  (:normal 14.0f0)
-                                  (:large 18.0f0)
-                                  (:very-large 24.0f0)
-                                  (:huge 32.0f0)
-                                  (t (float (or size 14) 1.0f0))))
-                   (weight (if (and (listp face) (member :bold face))
-                               :weight700
-                               :weight400)))
-               (frs:paragraph-style-set-font-family style mapped-family)
-               (frs:paragraph-style-set-font-size style mapped-size)
-               (frs:paragraph-style-set-font-weight style weight)
-               (frs:paragraph-style-set-foreground style paint)))
-           ;; Build paragraph and get metrics
-           (frs:with-paragraph-builder (builder typo-ctx)
-             (frs:paragraph-builder-push-style builder style)
-             (frs:paragraph-builder-add-text builder string)
-             (frs:paragraph-builder-pop-style builder)
-             (let ((paragraph (frs:paragraph-builder-build builder 10000.0f0)))
-               (unwind-protect
-                    (values (frs:paragraph-get-height paragraph)
-                            (frs:paragraph-get-alphabetic-baseline paragraph)
-                            (frs:paragraph-get-longest-line-width paragraph))
-                 (frs:release-paragraph paragraph)))))
-      (frs:release-paragraph-style style))))
+   (multiple-value-bind (paragraph height baseline width)
+       (%layout-paragraph medium string text-style nil nil)
+     (frs:release-paragraph paragraph)
+     (values height baseline width)))
 
 (defmethod text-style-ascent ((text-style text-style) (medium render-stack-medium))
   "Return the ascent (distance above baseline) in pixels."
@@ -731,55 +747,15 @@ The render loop on the main thread handles presentation."
                       &key text-style (start 0) end)
   "Calculate the size of a text string.
    Returns five values: width, height, final-x, final-y, baseline."
-  (let* ((text-style (or text-style (medium-text-style medium)))
-         (substr (subseq string start (or end (length string))))
-         (port (port medium))
-         (typo-ctx (runtime-typography-context (port-runtime port)))
-         (paint (%get-medium-paint medium))
-         (style (frs:make-paragraph-style)))
+  (multiple-value-bind (paragraph height baseline width)
+      (%layout-paragraph medium string text-style start end)
     (unwind-protect
-         (progn
-           ;; Configure style
-           (multiple-value-bind (family face size)
-               (text-style-components text-style)
-             (let ((mapped-family (case family
-                                    (:serif "Roboto Serif")
-                                    (:sans-serif "Roboto")
-                                    (:fix "Roboto Mono")
-                                    (t (or family "Roboto"))))
-                   (mapped-size (case size
-                                  (:tiny 8.0f0)
-                                  (:very-small 10.0f0)
-                                  (:small 12.0f0)
-                                  (:normal 14.0f0)
-                                  (:large 18.0f0)
-                                  (:very-large 24.0f0)
-                                  (:huge 32.0f0)
-                                  (t (float (or size 14) 1.0f0))))
-                   (weight (if (and (listp face) (member :bold face))
-                               :weight700
-                               :weight400)))
-               (frs:paragraph-style-set-font-family style mapped-family)
-               (frs:paragraph-style-set-font-size style mapped-size)
-               (frs:paragraph-style-set-font-weight style weight)
-               (frs:paragraph-style-set-foreground style paint)))
-           ;; Build paragraph and get metrics
-           (frs:with-paragraph-builder (builder typo-ctx)
-             (frs:paragraph-builder-push-style builder style)
-             (frs:paragraph-builder-add-text builder substr)
-             (frs:paragraph-builder-pop-style builder)
-             (let ((paragraph (frs:paragraph-builder-build builder 10000.0f0)))
-               (unwind-protect
-                    (let ((width (frs:paragraph-get-longest-line-width paragraph))
-                          (height (frs:paragraph-get-height paragraph))
-                          (baseline (frs:paragraph-get-alphabetic-baseline paragraph)))
-                      (values (float width 1.0f0)
-                              (float height 1.0f0)
-                              (float width 1.0f0)
-                              0.0f0
-                              (float baseline 1.0f0)))
-                 (frs:release-paragraph paragraph)))))
-      (frs:release-paragraph-style style))))
+         (values (float width 1.0f0)
+                 (float height 1.0f0)
+                 (float width 1.0f0)
+                 0.0f0
+                 (float baseline 1.0f0))
+      (frs:release-paragraph paragraph))))
 
 (defmethod medium-beep ((medium render-stack-medium))
   ;; Produce an audible beep

@@ -420,6 +420,28 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
           (,nh (abs (- ,bottom ,top))))
      ,@body))
 
+(defmacro %with-medium-clip ((builder medium) &body body)
+  "Wrap BODY with DL builder save/clip-rect/restore when the medium has an
+active clip region. No-op (zero save/restore overhead) when clip is +everywhere+."
+  (let ((b (gensym "BUILDER"))
+        (cl (gensym "CLIP"))
+        (activep (gensym "ACTIVEP")))
+    `(let* ((,b ,builder)
+            (,cl (medium-clipping-region ,medium))
+            (,activep (not (eq ,cl +everywhere+))))
+       (when ,activep
+         (frs:display-list-builder-save ,b)
+         (let ((dc (transform-region (climi::medium-device-transformation ,medium) ,cl)))
+           (with-bounding-rectangle* (l tp r bt) dc
+             (frs:display-list-builder-clip-rect
+              ,b (float l 1.0f0) (float tp 1.0f0)
+              (float (abs (- r l)) 1.0f0) (float (abs (- bt tp)) 1.0f0)
+              :intersect))))
+       (unwind-protect
+            (progn ,@body)
+         (when ,activep
+           (frs:display-list-builder-restore ,b))))))
+
 ;;; Medium drawing operations
 
 (defmethod medium-draw-point* ((medium render-stack-medium) x y)
@@ -433,11 +455,12 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
         (let ((scale (%compute-transform-scale medium tr)))
           (frs:paint-set-draw-style paint :fill)
           (climi::with-transformed-position (tr x y)
-            (frs:draw-rect builder
-                           (float x 1.0f0)
-                           (float y 1.0f0)
-                           scale scale
-                           paint)))))))
+            (%with-medium-clip (builder medium)
+              (frs:draw-rect builder
+                             (float x 1.0f0)
+                             (float y 1.0f0)
+                             scale scale
+                             paint))))))))
 
 (defmethod medium-draw-points* ((medium render-stack-medium) coord-seq)
   "Draw multiple points from coord-seq (sequence of x y pairs)."
@@ -450,15 +473,16 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
       (with-ink-on-paint (paint ink medium)
         (let ((scale (%compute-transform-scale medium tr)))
           (frs:paint-set-draw-style paint :fill)
-          (loop for i from 0 below (length coords) by 2
-                do (let ((x (aref coords i))
-                         (y (aref coords (1+ i))))
-                     (climi::with-transformed-position (tr x y)
-                       (frs:draw-rect builder
-                                      (float x 1.0f0)
-                                      (float y 1.0f0)
-                                      scale scale
-                                      paint)))))))))
+          (%with-medium-clip (builder medium)
+            (loop for i from 0 below (length coords) by 2
+                  do (let ((x (aref coords i))
+                           (y (aref coords (1+ i))))
+                       (climi::with-transformed-position (tr x y)
+                         (frs:draw-rect builder
+                                        (float x 1.0f0)
+                                        (float y 1.0f0)
+                                        scale scale
+                                        paint))))))))))
 
 (defmethod medium-draw-line* ((medium render-stack-medium) x1 y1 x2 y2)
   "Draw a line from (x1, y1) to (x2, y2)."
@@ -475,7 +499,8 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
             (frs:path-line-to pb (float x2 1.0f0) (float y2 1.0f0))
             (let ((path (frs:build-path pb)))
               (unwind-protect
-                   (frs:draw-path builder path paint)
+                   (%with-medium-clip (builder medium)
+                     (frs:draw-path builder path paint))
                 (frs:release-path path)))))))))
 
 (defmethod medium-draw-lines* ((medium render-stack-medium) coord-seq)
@@ -501,7 +526,8 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
                        (frs:path-line-to pb (float x2 1.0f0) (float y2 1.0f0)))))
           (let ((path (frs:build-path pb)))
             (unwind-protect
-                 (frs:draw-path builder path paint)
+                 (%with-medium-clip (builder medium)
+                   (frs:draw-path builder path paint))
               (frs:release-path path))))))))
 
 (defmethod medium-draw-polygon* ((medium render-stack-medium) coord-seq closed filled)
@@ -534,7 +560,8 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
             (frs:path-close pb))
           (let ((path (frs:build-path pb)))
             (unwind-protect
-                 (frs:draw-path builder path paint)
+                 (%with-medium-clip (builder medium)
+                   (frs:draw-path builder path paint))
               (frs:release-path path))))))))
 
 (defmethod medium-draw-rectangle* ((medium render-stack-medium) x1 y1 x2 y2 filled)
@@ -557,10 +584,11 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
             ;; Fast path: axis-aligned transform — use draw-rect
             (climi::with-transformed-positions* (tr x1 y1 x2 y2)
               (%with-normalized-rect (nx ny nw nh x1 y1 x2 y2)
-                (frs:draw-rect builder
-                               (float nx 1.0f0) (float ny 1.0f0)
-                               (float nw 1.0f0) (float nh 1.0f0)
-                               paint)))
+                (%with-medium-clip (builder medium)
+                  (frs:draw-rect builder
+                                 (float nx 1.0f0) (float ny 1.0f0)
+                                 (float nw 1.0f0) (float nh 1.0f0)
+                                 paint))))
             ;; General path: rotated/sheared — transform each corner
             (frs:with-path-builder (pb)
               (multiple-value-bind (ax ay) (transform-position tr x1 y1)
@@ -574,7 +602,8 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
               (frs:path-close pb)
               (let ((path (frs:build-path pb)))
                 (unwind-protect
-                     (frs:draw-path builder path paint)
+                     (%with-medium-clip (builder medium)
+                       (frs:draw-path builder path paint))
                   (frs:release-path path)))))))))
 
 (defmethod medium-draw-ellipse* ((medium render-stack-medium)
@@ -609,10 +638,11 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
                      (right (+ center-x radius-x))
                      (bottom (+ center-y radius-y)))
                 (%with-normalized-rect (nx ny nw nh left top right bottom)
-                  (frs:draw-oval builder
-                                 (float nx 1.0f0) (float ny 1.0f0)
-                                 (float nw 1.0f0) (float nh 1.0f0)
-                                 paint))))))))))
+                  (%with-medium-clip (builder medium)
+                    (frs:draw-oval builder
+                                   (float nx 1.0f0) (float ny 1.0f0)
+                                   (float nw 1.0f0) (float nh 1.0f0)
+                                   paint)))))))))))
 
 (defmethod medium-draw-text* ((medium render-stack-medium)
                                 string x y
@@ -635,7 +665,8 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
              (%layout-paragraph medium string nil start end)
            (let ((draw-x (%adjust-text-x x align-x width))
                  (draw-y (%adjust-text-y y align-y height baseline)))
-             (frs:draw-paragraph builder paragraph draw-x draw-y)))))))
+             (%with-medium-clip (builder medium)
+               (frs:draw-paragraph builder paragraph draw-x draw-y))))))))
 
 ;;; Medium state
 
@@ -725,12 +756,13 @@ The render loop on the main thread handles presentation."
         (frs:paint-set-draw-style paint :fill)
         (climi::with-transformed-positions* (tr left top right bottom)
           (%with-normalized-rect (nx ny nw nh left top right bottom)
-            (frs:draw-rect builder
-                           (float nx 1.0f0)
-                           (float ny 1.0f0)
-                           (float nw 1.0f0)
-                           (float nh 1.0f0)
-                           paint)))))))
+            (%with-medium-clip (builder medium)
+              (frs:draw-rect builder
+                             (float nx 1.0f0)
+                             (float ny 1.0f0)
+                             (float nw 1.0f0)
+                             (float nh 1.0f0)
+                             paint))))))))
 
 ;;; Font Metrics Protocol
 ;;; These methods provide text measurement for layout calculations

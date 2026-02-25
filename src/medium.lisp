@@ -454,12 +454,11 @@ active clip region. No-op (zero save/restore overhead) when clip is +everywhere+
         (let ((scale (%compute-transform-scale medium tr)))
           (frs:paint-set-draw-style paint :fill)
           (climi::with-transformed-position (tr x y)
-            (%with-medium-clip (builder medium)
-              (frs:draw-rect builder
-                             (float x 1.0f0)
-                             (float y 1.0f0)
-                             scale scale
-                             paint))))))))
+            (frs:draw-rect builder
+                           (float x 1.0f0)
+                           (float y 1.0f0)
+                           scale scale
+                           paint)))))))
 
 (defmethod medium-draw-points* ((medium render-stack-medium) coord-seq)
   "Draw multiple points from coord-seq (sequence of x y pairs)."
@@ -472,16 +471,15 @@ active clip region. No-op (zero save/restore overhead) when clip is +everywhere+
       (with-ink-on-paint (paint ink medium)
         (let ((scale (%compute-transform-scale medium tr)))
           (frs:paint-set-draw-style paint :fill)
-          (%with-medium-clip (builder medium)
-            (loop for i from 0 below (length coords) by 2
-                  do (let ((x (aref coords i))
-                           (y (aref coords (1+ i))))
-                       (climi::with-transformed-position (tr x y)
-                         (frs:draw-rect builder
-                                        (float x 1.0f0)
-                                        (float y 1.0f0)
-                                        scale scale
-                                        paint))))))))))
+          (loop for i from 0 below (length coords) by 2
+                do (let ((x (aref coords i))
+                         (y (aref coords (1+ i))))
+                     (climi::with-transformed-position (tr x y)
+                       (frs:draw-rect builder
+                                      (float x 1.0f0)
+                                      (float y 1.0f0)
+                                      scale scale
+                                      paint)))))))))
 
 (defmethod medium-draw-line* ((medium render-stack-medium) x1 y1 x2 y2)
   "Draw a line from (x1, y1) to (x2, y2)."
@@ -498,8 +496,7 @@ active clip region. No-op (zero save/restore overhead) when clip is +everywhere+
             (frs:path-line-to pb (float x2 1.0f0) (float y2 1.0f0))
             (let ((path (frs:build-path pb)))
               (unwind-protect
-                   (%with-medium-clip (builder medium)
-                     (frs:draw-path builder path paint))
+                   (frs:draw-path builder path paint)
                 (frs:release-path path)))))))))
 
 (defmethod medium-draw-lines* ((medium render-stack-medium) coord-seq)
@@ -525,8 +522,7 @@ active clip region. No-op (zero save/restore overhead) when clip is +everywhere+
                        (frs:path-line-to pb (float x2 1.0f0) (float y2 1.0f0)))))
           (let ((path (frs:build-path pb)))
             (unwind-protect
-                 (%with-medium-clip (builder medium)
-                   (frs:draw-path builder path paint))
+                 (frs:draw-path builder path paint)
               (frs:release-path path))))))))
 
 (defmethod medium-draw-polygon* ((medium render-stack-medium) coord-seq closed filled)
@@ -559,8 +555,7 @@ active clip region. No-op (zero save/restore overhead) when clip is +everywhere+
             (frs:path-close pb))
           (let ((path (frs:build-path pb)))
             (unwind-protect
-                 (%with-medium-clip (builder medium)
-                   (frs:draw-path builder path paint))
+                 (frs:draw-path builder path paint)
               (frs:release-path path))))))))
 
 (defmethod medium-draw-rectangle* ((medium render-stack-medium) x1 y1 x2 y2 filled)
@@ -583,11 +578,10 @@ active clip region. No-op (zero save/restore overhead) when clip is +everywhere+
             ;; Fast path: axis-aligned transform — use draw-rect
             (climi::with-transformed-positions* (tr x1 y1 x2 y2)
               (%with-normalized-rect (nx ny nw nh x1 y1 x2 y2)
-                (%with-medium-clip (builder medium)
-                  (frs:draw-rect builder
-                                 (float nx 1.0f0) (float ny 1.0f0)
-                                 (float nw 1.0f0) (float nh 1.0f0)
-                                 paint))))
+                (frs:draw-rect builder
+                               (float nx 1.0f0) (float ny 1.0f0)
+                               (float nw 1.0f0) (float nh 1.0f0)
+                               paint)))
             ;; General path: rotated/sheared — transform each corner
             (frs:with-path-builder (pb)
               (multiple-value-bind (ax ay) (transform-position tr x1 y1)
@@ -601,8 +595,7 @@ active clip region. No-op (zero save/restore overhead) when clip is +everywhere+
               (frs:path-close pb)
               (let ((path (frs:build-path pb)))
                 (unwind-protect
-                     (%with-medium-clip (builder medium)
-                       (frs:draw-path builder path paint))
+                     (frs:draw-path builder path paint)
                   (frs:release-path path)))))))))
 
 (defmethod medium-draw-ellipse* ((medium render-stack-medium)
@@ -637,11 +630,10 @@ active clip region. No-op (zero save/restore overhead) when clip is +everywhere+
                      (right (+ center-x radius-x))
                      (bottom (+ center-y radius-y)))
                 (%with-normalized-rect (nx ny nw nh left top right bottom)
-                  (%with-medium-clip (builder medium)
-                    (frs:draw-oval builder
-                                   (float nx 1.0f0) (float ny 1.0f0)
-                                   (float nw 1.0f0) (float nh 1.0f0)
-                                   paint)))))))))))
+                  (frs:draw-oval builder
+                                 (float nx 1.0f0) (float ny 1.0f0)
+                                 (float nw 1.0f0) (float nh 1.0f0)
+                                 paint))))))))))
 
 (defmethod medium-draw-text* ((medium render-stack-medium)
                                 string x y
@@ -664,8 +656,7 @@ active clip region. No-op (zero save/restore overhead) when clip is +everywhere+
              (%layout-paragraph medium string nil start end)
            (let ((draw-x (%adjust-text-x x align-x width))
                  (draw-y (%adjust-text-y y align-y height baseline)))
-             (%with-medium-clip (builder medium)
-               (frs:draw-paragraph builder paragraph draw-x draw-y))))))))
+             (frs:draw-paragraph builder paragraph draw-x draw-y)))))))
 
 ;;; Medium state
 
@@ -755,13 +746,12 @@ The render loop on the main thread handles presentation."
         (frs:paint-set-draw-style paint :fill)
         (climi::with-transformed-positions* (tr left top right bottom)
           (%with-normalized-rect (nx ny nw nh left top right bottom)
-            (%with-medium-clip (builder medium)
-              (frs:draw-rect builder
-                             (float nx 1.0f0)
-                             (float ny 1.0f0)
-                             (float nw 1.0f0)
-                             (float nh 1.0f0)
-                             paint))))))))
+            (frs:draw-rect builder
+                           (float nx 1.0f0)
+                           (float ny 1.0f0)
+                           (float nw 1.0f0)
+                           (float nh 1.0f0)
+                           paint)))))))
 
 ;;; Font Metrics Protocol
 ;;; These methods provide text measurement for layout calculations

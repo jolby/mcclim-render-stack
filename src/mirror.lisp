@@ -61,12 +61,19 @@ Created by get-or-create-mirror-surface, invalidated on resize, released on dest
     :initarg  :logical-height
     :accessor mirror-logical-height
     :documentation "Window height in logical (device-independent) pixels from frame geometry.")
-   (display-list-builder
+   (pane-dl-map
+    :initform (make-hash-table :test 'eq)
+    :accessor mirror-pane-dl-map
+    :documentation "Hash table mapping McCLIM sheet -> retained Impeller display-list.
+Protected by dl-lock. Each entry is the most recent DL produced by that pane's medium.
+Entries are replaced (old DL released) each time a pane redraws.
+Released on destroy-mirror.")
+   (frame-dirty-p
     :initform nil
-    :accessor mirror-display-list-builder
-    :documentation "Active Impeller display list builder for the current McCLIM frame.
-Created lazily by %get-medium-builder on the UI thread.
-Finalized (builder->DL) by medium-finish-output, then set back to NIL.")
+    :accessor mirror-frame-dirty-p
+    :documentation "T when at least one pane DL has been updated since the last composite.
+Set by medium-finish-output (UI thread, under dl-lock).
+Cleared by render-delegate-draw after compositing (main thread, under dl-lock).")
    (pending-dl
     :initform nil
     :accessor mirror-pending-dl
@@ -77,8 +84,14 @@ consumed and cleared by mirror-take-pending-dl (main thread).")
     :initform nil
     :accessor mirror-current-dl
     :documentation "Last successfully rendered display list, retained for redraw each frame.
-Written and read exclusively on the main thread — no lock needed.
+Written and read exclusively on the main thread -- no lock needed.
 Released on destroy-mirror or when replaced by a new DL.")
+   (composite-deps
+    :initform nil
+    :accessor mirror-composite-deps
+    :documentation "Snapshot alist ((sheet . dl) ...) whose DLs are referenced by
+current-dl's composite.  Kept alive until current-dl is replaced/released.
+Main-thread-owned -- no lock needed.")
    (dl-lock
     :initform (bt2:make-lock :name "mirror-dl")
     :reader mirror-dl-lock
@@ -206,5 +219,22 @@ Thread Contract: May be called from any thread. Acquires dl-lock."
             (mirror-pending-dl mirror) new-dl))
     (when old-dl
       (frs:release-display-list old-dl))))
+
+(defun mirror-snapshot-pane-dls (mirror)
+  "Return a snapshot alist ((sheet . dl) ...) with each DL retained.
+Under dl-lock, shallow-copies the pane-dl-map and retains each DL so the
+snapshot is safe to use after the lock is released.  Clears frame-dirty-p.
+
+Caller MUST release each DL in the snapshot after use (e.g. with frs:release-display-list).
+
+Thread Contract: May be called from any thread. Acquires dl-lock."
+  (let (snapshot)
+    (bt2:with-lock-held ((mirror-dl-lock mirror))
+      (maphash (lambda (sheet dl)
+                 (frs:retain-display-list dl)
+                 (push (cons sheet dl) snapshot))
+               (mirror-pane-dl-map mirror))
+      (setf (mirror-frame-dirty-p mirror) nil))
+    snapshot))
 
 ;;; realize-mirror and destroy-mirror are defined in port.lisp.

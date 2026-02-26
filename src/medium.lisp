@@ -6,12 +6,68 @@
   ((paint :accessor medium-paint :initform nil
           :documentation "Persistent Impeller paint object for this medium.")
    (surface :accessor medium-surface :initform nil
-             :documentation "The Impeller rendering surface."))
+             :documentation "The Impeller rendering surface.")
+   (display-list-builder
+    :initform nil
+    :accessor medium-display-list-builder
+    :documentation "Active Impeller display list builder for this medium's current frame.
+Created lazily by %get-medium-builder on the UI thread.
+Finalized (builder->DL) by medium-finish-output, then set back to NIL.")
+   (%ffi-ref
+    :initform (cons nil nil)
+    :reader medium-ffi-ref
+    :documentation "Cons cell (paint . builder) used as indirection for the GC finalizer.
+The finalizer captures this cell, not the medium, so it does not prevent GC.
+car = current paint, cdr = current builder. Kept in sync by setf :after methods."))
   (:documentation "McCLIM medium using Impeller for drawing."))
 
 (defmethod clim:make-medium ((port render-stack-port) sheet)
   "Create a render-stack-medium for the given port and sheet."
   (make-instance 'render-stack-medium :port port :sheet sheet))
+
+;;; FFI Lifecycle
+
+(defun %release-medium-ffi-resources (medium)
+  "Release the medium's Impeller paint and builder, and clear the finalizer cell.
+Safe to call multiple times (guards on non-nil). Called from degraft-medium :after
+(deterministic path) and possibly from the GC finalizer (safety net).
+
+Thread Contract: Must be called on the UI thread (Impeller objects)."
+  (let* ((ffi-ref (medium-ffi-ref medium))
+         (paint   (shiftf (car ffi-ref) nil))
+         (builder (shiftf (cdr ffi-ref) nil)))
+    (when paint
+      (frs:release-paint paint)
+      (setf (medium-paint medium) nil))
+    (when builder
+      (frs:release-display-list-builder builder)
+      (setf (medium-display-list-builder medium) nil))))
+
+(defmethod initialize-instance :after ((medium render-stack-medium) &key)
+  ;; GC safety net: capture only the cons cell so the finalizer does not
+  ;; retain a reference that would prevent GC of the medium itself.
+  (let ((ffi-ref (medium-ffi-ref medium)))
+    (tg:finalize medium
+                 (lambda ()
+                   (let ((paint   (shiftf (car ffi-ref) nil))
+                         (builder (shiftf (cdr ffi-ref) nil)))
+                     (when paint
+                       (frs:release-paint paint))
+                     (when builder
+                       (frs:release-display-list-builder builder)))))))
+
+;; Keep the finalizer's indirection cell in sync with the slot values.
+(defmethod (setf medium-paint) :after (new-val (medium render-stack-medium))
+  (setf (car (medium-ffi-ref medium)) new-val))
+
+(defmethod (setf medium-display-list-builder) :after
+    (new-val (medium render-stack-medium))
+  (setf (cdr (medium-ffi-ref medium)) new-val))
+
+(defmethod climi::degraft-medium :after ((medium render-stack-medium) port sheet)
+  "Deterministic FFI cleanup when McCLIM detaches the medium from its sheet."
+  (declare (ignore port sheet))
+  (%release-medium-ffi-resources medium))
 
 ;;; Helper functions for medium drawing
 
@@ -46,7 +102,7 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
       (log:warn :render "No render-stack-mirror: sheet=~A mirror-type=~A"
                 (type-of sheet) (type-of mirror))
       (return-from %get-medium-builder nil))
-    (or (mirror-display-list-builder mirror)
+    (or (medium-display-list-builder medium)
         ;; First drawing op for this frame — create a fresh builder.
         (let ((builder (frs:make-display-list-builder)))
           ;; Apply HiDPI scale so McCLIM logical coordinates map to physical pixels.
@@ -65,8 +121,8 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
                                                :log-w log-w :log-h log-h
                                                :scale-x scale-x :scale-y scale-y)
               (log:debug :render "Creating DL builder"))
-            (frs:display-list-builder-set-transform builder scale-x scale-y 0.0f0 0.0f0))
-          (setf (mirror-display-list-builder mirror) builder)
+            #+(or)(frs:display-list-builder-set-transform builder scale-x scale-y 0.0f0 0.0f0))
+          (setf (medium-display-list-builder medium) builder)
           builder))))
 
 
@@ -689,15 +745,14 @@ Thread Contract: Called on UI thread."
        (funcall continuation)))))
 
 (defmethod medium-finish-output ((medium render-stack-medium))
-  "Finalize the current frame's display list and publish it for rasterization.
+  "Finalize this pane's display list and store it in the mirror's pane-dl-map.
 
-Called by McCLIM after the display function completes (e.g., via finish-output
-on the pane, or by invoke-with-output-buffered's unwind-protect).
+Called by McCLIM after drawing ops complete (via invoke-with-output-buffered's
+unwind-protect, or stream-finish-output).
 
-Only finalizes and publishes from the top-level mirrored sheet.  Sub-pane
-mediums accumulate into the shared mirror builder but are no-ops here —
-the builder accumulates all pane content and is finalized once by the
-top-level sheet (identified by having a direct mirror).
+Each pane medium finalizes its own builder into a DL and stores it in the
+mirror's pane-dl-map keyed by the medium's sheet.  Sets frame-dirty-p so
+render-delegate-draw knows to composite a new frame.
 
 Thread Contract: Called on UI thread."
   (let* ((sheet  (medium-sheet medium))
@@ -705,27 +760,27 @@ Thread Contract: Called on UI thread."
     (log:trace :render "medium-finish-output: sheet=~A mirror-type=~A"
                (type-of sheet) (type-of mirror))
     (when (typep mirror 'render-stack-mirror)
-      ;; Only finalize/publish from the top-level mirrored sheet.
-      ;; Sub-pane mediums draw into the shared builder but don't finalize it.
-      (unless (climi::sheet-direct-mirror sheet)
-        (return-from medium-finish-output nil))
-      (let ((builder (mirror-display-list-builder mirror)))
+      (let ((builder (medium-display-list-builder medium)))
         (log:debug :render "medium-finish-output: builder=~A" builder)
         (when builder
           (handler-case
               (let ((dl (frs:create-display-list builder)))
-                ;; Builder is spent — release it and clear the slot.
+                ;; Builder is spent -- release it and clear the slot.
                 (frs:release-display-list-builder builder)
-                (setf (mirror-display-list-builder mirror) nil)
-                ;; Publish DL for the main thread.  Drops any unconsumed
-                ;; previous DL (mirror-store-pending-dl releases it).
-                (log:debug :render "Published DL ~A" dl)
-                (mirror-store-pending-dl mirror dl))
+                (setf (medium-display-list-builder medium) nil)
+                ;; Store DL per-pane; release any previous DL for this sheet.
+                (bt2:with-lock-held ((mirror-dl-lock mirror))
+                  (let ((old-dl (gethash sheet (mirror-pane-dl-map mirror))))
+                    (when old-dl
+                      (frs:release-display-list old-dl)))
+                  (setf (gethash sheet (mirror-pane-dl-map mirror)) dl)
+                  (setf (mirror-frame-dirty-p mirror) t))
+                (log:debug :render "Stored pane DL ~A for sheet ~A" dl (type-of sheet)))
             (error (e)
               (log:error :render "medium-finish-output error: ~A" e)
               ;; Avoid leaking the builder on error.
               (frs:release-display-list-builder builder)
-              (setf (mirror-display-list-builder mirror) nil))))))))
+              (setf (medium-display-list-builder medium) nil))))))))
 
 (defmethod medium-force-output ((medium render-stack-medium))
   "Force any pending output to the display — no-op for render-stack.

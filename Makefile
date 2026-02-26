@@ -67,3 +67,8 @@ demo-town: check-quicklisp
 	  --eval '(ql:quickload :mcclim-render-stack :force t :silent t)' \
 	  --eval '(load "$(CWD)/examples/town-example.lisp")' \
 	  --eval '(clim-demo.town-example:run)'
+
+diag-composite: check-quicklisp
+	$(SBCL) $(SBCL_FLAGS) $(QL_BOOT) $(ASDF_BOOT) \
+	  --eval '(load "$(CWD)/dev/diag-composite.lisp")' \
+	  --eval '(rs-diag:run)'

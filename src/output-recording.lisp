@@ -146,17 +146,14 @@
   (frs:with-display-list-builder (builder)
     (let ((medium (sheet-medium stream)))
       ;; Temporarily redirect drawing into our builder
-      (let ((old-builder (mirror-display-list-builder
-                          (climi::sheet-mirror (medium-sheet medium))))
+      (let ((old-builder (medium-display-list-builder medium))
             (old-buffering (medium-buffering-output-p medium)))
-        ;; Store builder on mirror so %get-medium-builder finds it
-        (setf (mirror-display-list-builder
-               (climi::sheet-mirror (medium-sheet medium))) builder)
+        ;; Store builder on medium so %get-medium-builder finds it
+        (setf (medium-display-list-builder medium) builder)
         (setf (medium-buffering-output-p medium) t)
         (unwind-protect
              (climi::replay-output-record-list record stream)
-          (setf (mirror-display-list-builder
-                 (climi::sheet-mirror (medium-sheet medium))) old-builder)
+          (setf (medium-display-list-builder medium) old-builder)
           (setf (medium-buffering-output-p medium) old-buffering))))
     ;; Capture the display list
     (let ((dl (frs:create-display-list builder)))
@@ -172,8 +169,7 @@
   (let ((medium (sheet-medium stream)))
     (if (and (typep medium 'render-stack-medium)
              (medium-buffering-output-p medium))
-        (let ((builder (mirror-display-list-builder
-                        (climi::sheet-mirror (medium-sheet medium)))))
+        (let ((builder (medium-display-list-builder medium)))
           (when (or (cached-needs-rebuild record)
                     (null (cached-display-list record)))
             (rebuild-cached-display-list record stream))

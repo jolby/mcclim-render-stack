@@ -336,19 +336,34 @@ Thread Contract: Called on UI thread. SDL3/GL ops dispatched via runner."
 Thread Contract: Called on UI thread. Impeller/SDL3 cleanup on main thread."
   (let ((mirror (climi::sheet-direct-mirror sheet)))
     (when mirror
-      ;; Release cached Impeller surface and retained DL on the main thread.
-      (when (or (mirror-surface mirror) (mirror-current-dl mirror))
-        (rs-internals:submit-to-main-thread rs-internals:*runner*
-          (lambda ()
-            (when (mirror-surface mirror)
-              (rs-internals:without-float-traps
-                (frs:release-surface (mirror-surface mirror)))
-              (setf (mirror-surface mirror) nil))
-            (when (mirror-current-dl mirror)
-              (frs:release-display-list (mirror-current-dl mirror))
-              (setf (mirror-current-dl mirror) nil)))
-          :blocking t
-          :tag :release-mirror-resources))
+      ;; Release cached Impeller resources on the main thread.
+      (rs-internals:submit-to-main-thread rs-internals:*runner*
+        (lambda ()
+          (when (mirror-surface mirror)
+            (rs-internals:without-float-traps
+              (frs:release-surface (mirror-surface mirror)))
+            (setf (mirror-surface mirror) nil))
+          (when (mirror-current-dl mirror)
+            (frs:release-display-list (mirror-current-dl mirror))
+            (setf (mirror-current-dl mirror) nil))
+          ;; Release composite dependency DLs (sub-DLs referenced by composite).
+          (when (mirror-composite-deps mirror)
+            (dolist (entry (mirror-composite-deps mirror))
+              (frs:release-display-list (cdr entry)))
+            (setf (mirror-composite-deps mirror) nil))
+          ;; Release any pending DL that was never consumed.
+          (bt2:with-lock-held ((mirror-dl-lock mirror))
+            (when (mirror-pending-dl mirror)
+              (frs:release-display-list (mirror-pending-dl mirror))
+              (setf (mirror-pending-dl mirror) nil))
+            ;; Release all per-pane DLs.
+            (maphash (lambda (sheet dl)
+                       (declare (ignore sheet))
+                       (frs:release-display-list dl))
+                     (mirror-pane-dl-map mirror))
+            (clrhash (mirror-pane-dl-map mirror))))
+        :blocking t
+        :tag :release-mirror-resources)
 
       ;; Remove from registry so event routing stops finding this mirror.
       (deregister-mirror port mirror)

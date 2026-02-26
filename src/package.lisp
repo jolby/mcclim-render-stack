@@ -66,7 +66,9 @@
     #:mirror-logical-width
     #:mirror-logical-height
     #:mirror-scale
-    #:mirror-display-list-builder
+    #:mirror-pane-dl-map
+    #:mirror-frame-dirty-p
+    #:mirror-snapshot-pane-dls
     #:mirror-pending-dl
     #:mirror-dl-lock
     #:mirror-take-pending-dl
@@ -83,6 +85,7 @@
 
     ;; Medium
     #:render-stack-medium
+    #:medium-display-list-builder
 
     ;; Graft
     #:render-stack-graft

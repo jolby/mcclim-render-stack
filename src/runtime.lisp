@@ -234,9 +234,10 @@ Thread Contract: MUST be called on UI thread."
     ((runtime render-stack-runtime) pipeline-item)
   "Called on main thread to rasterize.  Renders each registered mirror.
 
-For each mirror: if a pending display list is available (published by
-medium-finish-output on the UI thread), consume it and draw it to the
-mirror's FBO surface.  Falls back to the test pattern if no DL is pending.
+For each mirror: if frame-dirty-p is set (by medium-finish-output on the
+UI thread), snapshot pane DLs, composite them into a single DL, and draw
+it to the mirror FBO surface.  Falls back to the retained current-dl or
+test pattern when nothing is dirty.
 
 Thread Contract: MUST be called on main thread."
   (declare (ignore pipeline-item))
@@ -246,29 +247,53 @@ Thread Contract: MUST be called on main thread."
     (when *debug-frame-limit*
       (let ((n (incf (runtime-debug-frame-count runtime))))
         (when (>= n *debug-frame-limit*)
-          (log:info :debug "Frame limit ~A reached — hard exit." *debug-frame-limit*)
+          (log:info :debug "Frame limit ~A reached - hard exit." *debug-frame-limit*)
           (uiop:quit 0))))
     (let ((mirrors (collect-registered-mirrors port)))
       (dolist (mirror mirrors)
-        (let ((dl (mirror-take-pending-dl mirror)))
+        ;; Snapshot pane DLs when frame-dirty-p is set, then composite them.
+        (let* ((snapshot
+                (when (bt2:with-lock-held ((mirror-dl-lock mirror))
+                        (mirror-frame-dirty-p mirror))
+                  (mirror-snapshot-pane-dls mirror)))
+               (new-dl
+                (when snapshot
+                  (composite-pane-dls-for-mirror mirror snapshot))))
+          ;; TEMP DIAG: trace render path decisions
+          (format *error-output* "~&[RD] first=~A dirty=~A snap=~A newdl=~A currdl=~A dims=~Ax~A~%"
+                  (mirror-first-frame-drawn-p mirror)
+                  (not (null snapshot))
+                  (if snapshot (length snapshot) 0)
+                  (not (null new-dl))
+                  (not (null (mirror-current-dl mirror)))
+                  (mirror-width mirror) (mirror-height mirror))
           (cond
-            ;; First-frame path: window is hidden. Run staged reveal sequence.
+            ;; First-frame reveal: window is still hidden. Run staged sequence.
             ((not (mirror-first-frame-drawn-p mirror))
-             (perform-first-frame-reveal mirror dl))
-            ;; McCLIM produced a new display list — replace retained DL and draw.
-            (dl
+             (perform-first-frame-reveal mirror new-dl)
+             ;; Keep snapshot DLs alive -- composite references them.
+             (when snapshot
+               (%release-composite-deps mirror)
+               (setf (mirror-composite-deps mirror) snapshot)))
+            ;; New composite DL produced - update retained DL and draw.
+            (new-dl
+             ;; Release old composite deps first (frees sub-DLs the old
+             ;; composite referenced), then replace the composite itself.
+             (%release-composite-deps mirror)
              (let ((old (mirror-current-dl mirror)))
                (when old (frs:release-display-list old)))
-             (setf (mirror-current-dl mirror) dl)
-             (handler-case
-                 (let ((surface (get-or-create-mirror-surface mirror)))
+             (setf (mirror-current-dl mirror) new-dl
+                   (mirror-composite-deps mirror) snapshot)
+             (let ((surface (get-or-create-mirror-surface mirror)))
+               (format *error-output* "~&[RD] COMPOSITE DRAW: surface=~A~%" (not (null surface)))
+               (handler-case
                    (when surface
                      (rs-internals:without-float-traps
-                       (frs:surface-draw-display-list surface dl))))
-               (error (e)
-                 (log:error :render "Error drawing display list: ~A" e)))
+                       (frs:surface-draw-display-list surface new-dl)))
+                 (error (e)
+                   (log:error :render "Error drawing composite DL: ~A" e))))
              (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror)))
-            ;; No new DL — redraw retained DL if available, else test pattern.
+            ;; Not dirty - redraw retained DL if available, else test pattern.
             (t
              (let ((current (mirror-current-dl mirror)))
                (if current
@@ -283,8 +308,16 @@ Thread Contract: MUST be called on main thread."
              (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror)))))))))
 
 ;;; ============================================================================
-;;; Direct Rendering (Phase 1)
+;;; Direct Rendering
 ;;; ============================================================================
+
+(defun %release-composite-deps (mirror)
+  "Release all snapshot DLs stored as composite dependencies on MIRROR.
+These are the sub-DLs referenced by mirror-current-dl's composite.
+Thread Contract: MUST be called on main thread."
+  (dolist (entry (mirror-composite-deps mirror))
+    (frs:release-display-list (cdr entry)))
+  (setf (mirror-composite-deps mirror) nil))
 
 (defun collect-registered-mirrors (port)
   "Return a snapshot list of all mirrors currently in PORT's registry.
@@ -296,6 +329,74 @@ Takes a lock snapshot to avoid holding the lock during rendering."
                  (push mirror mirrors))
                (port-window-registry port))
       mirrors)))
+
+(defun %sheet-depth (sheet)
+  "Return the depth of SHEET in the sheet hierarchy (0 = root).
+Used to sort pane DLs for back-to-front compositing (painter's algorithm)."
+  (loop for s = (clim:sheet-parent sheet) then (clim:sheet-parent s)
+        while s
+        count 1))
+
+(defun composite-pane-dls-for-mirror (mirror snapshot)
+  "Build and return a retained composite display list from SNAPSHOT for MIRROR.
+
+SNAPSHOT is an alist ((sheet . dl) ...) with each DL already retained by
+the caller (via mirror-snapshot-pane-dls).  Pane DLs are sorted by sheet
+depth (shallowest first) for correct back-to-front compositing -- parent
+pane backgrounds are drawn before child pane content.
+
+A global HiDPI scale is applied once at the top of the composite builder;
+pane DLs draw in logical device coords (native offset already baked in via
+medium-device-transformation).  Per-pane clipping uses logical coords.
+
+Returns a retained ImpellerDisplayList on success, NIL if snapshot is empty
+or build fails.  The caller must release the returned DL.
+
+Thread Contract: MUST be called on the main thread."
+  (when (null snapshot)
+    (return-from composite-pane-dls-for-mirror nil))
+  (let* ((phys-w  (mirror-width  mirror))
+         (phys-h  (mirror-height mirror))
+         (log-w   (mirror-logical-width  mirror))
+         (log-h   (mirror-logical-height mirror))
+         (scale-x (if (plusp log-w) (float (/ phys-w log-w) 1.0f0) 1.0f0))
+         (scale-y (if (plusp log-h) (float (/ phys-h log-h) 1.0f0) 1.0f0))
+         (sorted  (sort (copy-list snapshot) #'<
+                        :key (lambda (entry) (%sheet-depth (car entry))))))
+    (handler-case
+        (let ((builder (frs:make-display-list-builder)))
+          (unwind-protect
+              (progn
+                ;; Global HiDPI scale -- pane DLs draw in logical device coords
+                ;; (native offset already baked in), scale converts to physical.
+                (frs:display-list-builder-scale builder scale-x scale-y)
+                (dolist (entry sorted)
+                  (let ((sheet (car entry))
+                        (dl    (cdr entry)))
+                    (handler-case
+                        (multiple-value-bind (lx ly)
+                            (clim:transform-position
+                             (climi::sheet-native-transformation sheet) 0 0)
+                          (multiple-value-bind (rx1 ry1 rx2 ry2)
+                              (clim:bounding-rectangle* (clim:sheet-region sheet))
+                            (let ((lw (float (- rx2 rx1) 1.0f0))
+                                  (lh (float (- ry2 ry1) 1.0f0)))
+                              (when (and (plusp lw) (plusp lh))
+                                (frs:display-list-builder-save builder)
+                                (frs:display-list-builder-clip-rect
+                                 builder
+                                 (float lx 1.0f0) (float ly 1.0f0)
+                                 lw lh)
+                                (frs:display-list-builder-draw-display-list builder dl 1.0)
+                                (frs:display-list-builder-restore builder)))))
+                      (error (e)
+                        (log:warn :render "composite: pane ~A positioning error: ~A"
+                                  (type-of sheet) e)))))
+                (frs:create-display-list builder))
+            (frs:release-display-list-builder builder)))
+      (error (e)
+        (log:error :render "composite: build error: ~A" e)
+        nil))))
 
 (defun perform-first-frame-reveal (mirror dl)
   "Execute the staged first-frame reveal sequence for MIRROR.

@@ -17,7 +17,7 @@
 
 (defpackage :impeller-multi-window
   (:use :clim :clim-lisp)
-  (:import-from :impeller-simple-frame #:simple-frame)
+  (:import-from :rs-simple-frame #:simple-frame)
   (:export #:run))
 
 (in-package :impeller-multi-window)

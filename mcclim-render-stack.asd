@@ -50,7 +50,11 @@
 (asdf:defsystem :mcclim-render-stack/examples
   :depends-on (:mcclim-render-stack)
   :components ((:module "examples"
-                  :components (
-                               (:file "hello-world")
-                               ;; (:file "simple-frame")
-                               ))))
+                  :components ((:file "hello-world")
+                               (:file "simple-frame")
+                               (:file "drawing-demo")
+                               ;; XXX -- needs porting from old code
+                               ;; (:file "elevated-card-demo")
+                               ;; (:file "gradient-demo")
+                               (:file "superapp")
+                               (:file "town-example")))))

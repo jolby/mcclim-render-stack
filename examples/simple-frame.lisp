@@ -1,7 +1,12 @@
 ;;;; example/simple-frame.lisp
 
 (ql:quickload :mcclim-render-stack :silent t :force t)
-(cl:in-package :clim-user)
+
+(defpackage :rs-simple-frame
+  (:use :clim :clim-lisp)
+  (:export #:run))
+
+(in-package :rs-simple-frame)
 
 ;;;; This example demonstrates:
 ;;;; 1. Basic define-application-frame usage
@@ -78,6 +83,32 @@
   (let ((frame (gadget-client gadget)))
     (frame-exit frame)))
 
+;;; Custom pane class for the fixed-height status bar
+;;;
+;;; Problem: clim-stream-pane's compose-space ignores user-specified space
+;;; requirements and instead derives them entirely from the output-history
+;;; bounding box.  redisplay-frame-pane :force-p t does not clear the history
+;;; (clearp comes from pane-needs-redisplay, which is nil after each redisplay),
+;;; so history records accumulate across mouse-motion events.  The bounding box
+;;; ratchets ever wider as text content changes, forcing the frame to grow.
+;;;
+;;; Fix: override the primary compose-space method on a subclass so that it
+;;; returns neutral (minimal) requirements.  The :around method from
+;;; space-requirement-options-mixin then applies the user-specified
+;;; width/height/min/max from the pane spec, ignoring output history entirely.
+;;; Output recording stays on so window-expose repaints still work.
+
+(defclass fixed-size-display-pane (clim:application-pane) ())
+
+(defmethod clim:compose-space ((pane fixed-size-display-pane) &key width height)
+  (declare (ignore width height))
+  ;; Return neutral requirements.  The space-requirement-options-mixin :around
+  ;; method merges these with the user-declared width/height/min/max, giving
+  ;; the correct fixed dimensions regardless of output-history content.
+  (clim:make-space-requirement
+   :width 0 :min-width 0 :max-width clim:+fill+
+   :height 0 :min-height 0 :max-height clim:+fill+))
+
 ;;; Application frame definition
 
 (define-application-frame simple-frame ()
@@ -89,6 +120,7 @@
    (canvas :application
            :display-function #'display-canvas
            :scroll-bars nil
+           :width 400
            :min-width 400
            :min-height 300)
    (hello-button :push-button
@@ -100,9 +132,12 @@
    (quit-button :push-button
                 :label "Quit"
                 :activate-callback #'quit-button-callback)
-   (status :application
+   (status fixed-size-display-pane
            :display-function #'display-status
            :scroll-bars nil
+           :width 1
+           :min-width 0
+           :height 60
            :min-height 60
            :max-height 60))
   (:layouts
@@ -151,10 +186,11 @@
 
 ;;; Run function
 
-(defun simple-frame-run (&key (width 600) (height 450))
-  "Run the simple frame test application using the SDL3+Impeller backend.
-   Uses backend:run-frame-top-level/sdl3 to manage SDL3 main loop on this thread."
+(defun run (&key (width 600) (height 450))
+  "Run the simple frame test application using the SDL3+Impeller backend."
   (setf clim:*default-server-path* '(:render-stack))
+  ;; (setf clim:*default-server-path* '(:clx-ttf))
+  (format t "~& Running Simple Frame using default-server-path: ~A~%" clim:*default-server-path*)
   (clim:run-frame-top-level (make-application-frame 'simple-frame
                                                     :width width
                                                     :height height)))

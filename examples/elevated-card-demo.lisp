@@ -1,11 +1,11 @@
 ;;;; example/elevated-card-demo.lisp
 ;;;; Visual demo of Material Design elevated cards with drop shadows
 
-(defpackage :impeller-elevated-card-demo
+(defpackage :rs-elevated-card-demo
   (:use :clim :clim-lisp)
   (:export #:run))
 
-(in-package :impeller-elevated-card-demo)
+(in-package :rs-elevated-card-demo)
 
 ;;; Demo application showing Material Design elevation shadows
 ;;;
@@ -50,7 +50,7 @@ Uses the recorded shadow API (draw-elevated-shadow*) so shadows persist
 across output recording and replay (e.g., window resize)."
   ;; Draw the shadow FIRST (painter's algorithm - shadow behind card)
   ;; This records the shadow in the output history
-  (mcclim-sdl3-impeller-backend:draw-elevated-shadow*
+  (frs:draw-elevated-shadow*
    stream
    x y (+ x width) (+ y height)
    :elevation elevation
@@ -60,7 +60,7 @@ across output recording and replay (e.g., window resize)."
 
   ;; Draw the card background as a rounded rectangle
   ;; Uses the recorded API so it survives output recording/replay
-  (mcclim-sdl3-impeller-backend:draw-rounded-rectangle*
+  (frs:draw-rounded-rectangle*
    stream
    x y (+ x width) (+ y height)
    :radius corner-radius
@@ -264,7 +264,7 @@ across output recording and replay (e.g., window resize)."
    
    Window positioning demo: no :left/:top specified, so window auto-centers
    on the primary display."
-  (setf clim:*default-server-path* '(:sdl3-impeller))
+  (setf clim:*default-server-path* '(:render-stack))
   (run-frame-top-level
    (make-application-frame 'elevated-card-demo
                            :width 1000

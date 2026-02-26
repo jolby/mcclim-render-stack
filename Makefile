@@ -11,7 +11,7 @@ SBCL_FLAGS := --dynamic-space-size 8096 --noinform --disable-debugger --non-inte
 ASDF_BOOT := --eval '(require :asdf)' --eval "(pushnew \#p\"$(CWD)/\" asdf:*central-registry*)"
 QL_BOOT := --eval '(load "$(QL)")'
 
-.PHONY: all load test test-unit test-integration test-ink test-line-style test-event clean check-quicklisp demo
+.PHONY: all load test test-unit test-integration test-ink test-line-style test-event clean check-quicklisp demo demo-simple-frame demo-drawing
 
 all: load
 
@@ -40,13 +40,30 @@ clean:
 demo: check-quicklisp
 	$(SBCL) $(SBCL_FLAGS) $(QL_BOOT) $(ASDF_BOOT) \
 	  --eval '(ql:quickload :mcclim-render-stack :force t :silent t)' \
-	  --eval '(ql:quickload :mcclim-render-stack/examples :force t :silent t)' \
 	  --eval '(load "$(CWD)/examples/hello-world.lisp")' \
-	  --eval '(clim-user::hello-world-run)'
+	  --eval '(rs-hello-world:run)'
 
 demo-simple-frame: check-quicklisp
 	$(SBCL) $(SBCL_FLAGS) $(QL_BOOT) $(ASDF_BOOT) \
 	  --eval '(ql:quickload :mcclim-render-stack :force t :silent t)' \
-	  --eval '(ql:quickload :mcclim-render-stack/examples :force t :silent t)' \
 	  --eval '(load "$(CWD)/examples/simple-frame.lisp")' \
-	  --eval '(clim-user::simple-frame-run)'
+	  --eval '(rs-simple-frame:run)'
+
+demo-drawing: check-quicklisp
+	$(SBCL) $(SBCL_FLAGS) $(QL_BOOT) $(ASDF_BOOT) \
+	  --eval '(ql:quickload :mcclim-render-stack :force t :silent t)' \
+	  --eval '(load "$(CWD)/examples/drawing-demo.lisp")' \
+	  --eval '(rs-drawing-demo:run)'
+
+demo-superapp: check-quicklisp
+	$(SBCL) $(SBCL_FLAGS) $(QL_BOOT) $(ASDF_BOOT) \
+	  --eval '(ql:quickload :mcclim-render-stack :force t :silent t)' \
+	  --eval '(ql:quickload :mcclim-render-stack/examples :force t :silent t)' \
+	  --eval '(load "$(CWD)/examples/superapp.lisp")' \
+	  --eval '(clim-demo.app:app-main)'
+
+demo-town: check-quicklisp
+	$(SBCL) $(SBCL_FLAGS) $(QL_BOOT) $(ASDF_BOOT) \
+	  --eval '(ql:quickload :mcclim-render-stack :force t :silent t)' \
+	  --eval '(load "$(CWD)/examples/town-example.lisp")' \
+	  --eval '(clim-demo.town-example:run)'

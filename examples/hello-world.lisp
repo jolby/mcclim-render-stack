@@ -2,7 +2,7 @@
 ;;;;
 ;;;; Usage:
 ;;;;   (load "hello-world.lisp")
-;;;;   (clim-user::hello-world-run)
+;;;;   (rs-hello-world:run)
 ;;;;
 ;;;; Press ESC or close window to exit.
 
@@ -17,8 +17,11 @@
 
 (cffi:load-foreign-library 'sdl3-clawed)
 
-;;;; Now define the example in clim-user package
-(in-package :clim-user)
+(defpackage :rs-hello-world
+  (:use :clim :clim-lisp)
+  (:export #:run))
+
+(in-package :rs-hello-world)
 
 ;;; Application state
 (defvar *hello-world-click-count* 0)
@@ -81,11 +84,11 @@
   (:command-table (hello-world :inherit-from nil)))
 
 ;;; Run function - call this to start the demo
-(defun hello-world-run (&key (width 500) (height 400))
+(defun run (&key (width 500) (height 400))
   "Run the Hello World demo using the render-stack backend."
   (setf clim:*default-server-path* '(:render-stack))
   (run-frame-top-level (make-application-frame 'hello-world
                                                 :width width
                                                 :height height)))
 
-(format t "~&Hello World demo loaded. Run (clim-user::hello-world-run) to start.~%")
+(format t "~&Hello World demo loaded. Run (rs-hello-world:run) to start.~%")

@@ -23,6 +23,35 @@
   "Exit after this many rendered frames. Useful during development to avoid
 kill -9. Set to NIL to disable (run indefinitely).")
 
+(defvar *render-assertions-enabled* t
+  "When T, render-pipeline invariants are checked on every draw cycle.
+Set to NIL to disable (e.g., for benchmarking or when the debugger is unwanted).
+
+In an interactive REPL (no --disable-debugger): a violated invariant calls
+BREAK and freezes the frame in the debugger so all state can be inspected.
+In batch mode (--disable-debugger): prints to stderr and continues.")
+
+(defmacro check-render-invariant (test message &rest args)
+  "Assert TEST is true at a render-pipeline checkpoint.
+
+On failure (TEST is nil):
+  1. Logs the violation at :error level (always visible regardless of log level).
+  2. BREAKs into the debugger with the full violation message.
+
+In an interactive REPL: execution suspends; inspect mirror, snapshot, surface,
+etc.; continue with the CONTINUE restart to resume the render loop.
+
+In batch mode (--disable-debugger): SBCL prints the message and continues
+automatically, so the render loop keeps running for diagnosis.
+
+Guarded by *render-assertions-enabled* -- set to NIL to silence assertions."
+  `(when *render-assertions-enabled*
+     (unless ,test
+       (let ((msg (format nil ,message ,@args)))
+         (log:error :render "Render invariant violated: ~A" msg)
+         (break "Render invariant violated: ~A~%~%Tip: (setf mcclim-render-stack::*render-assertions-enabled* nil) to mute"
+                msg)))))
+
 ;;; ============================================================================
 ;;; GL Proc Address Callback for Impeller
 ;;; ============================================================================
@@ -133,6 +162,12 @@ Called from port initialize-instance :after via rs-internals:submit-to-main-thre
   "Initialize render-engine and typography-context.
 MUST be called on the main thread.  Idempotent — safe to call multiple times."
   (rs-internals:assert-main-thread initialize-runtime)
+  ;; Ensure verbose global controller is running so log output reaches
+  ;; stdout/stderr even in batch SBCL (make demo, CI).  Must be called
+  ;; before any other log:* call in this method.
+  ;; (rs-internals:ensure-logging-initialized)
+  (rs-internals:setup-dev-logging)
+  (log:info :initialize-runtime "Loggin initialized!")
   (unless (runtime-initialized-p runtime)
     (log:info :mcclim-render-stack "Initializing runtime on main thread")
 
@@ -243,7 +278,9 @@ Thread Contract: MUST be called on main thread."
   (declare (ignore pipeline-item))
   (rs-internals:assert-main-thread render-delegate-draw)
   (let ((port (runtime-port runtime)))
-    (unless port (return-from render-delegate-draw nil))
+    (unless port
+      (log:warn :render "Nil Port passed to render-delegate-draw!. Doing nothing...")
+      (return-from render-delegate-draw nil))
     (when *debug-frame-limit*
       (let ((n (incf (runtime-debug-frame-count runtime))))
         (when (>= n *debug-frame-limit*)
@@ -259,14 +296,21 @@ Thread Contract: MUST be called on main thread."
                (new-dl
                 (when snapshot
                   (composite-pane-dls-for-mirror mirror snapshot))))
-          ;; TEMP DIAG: trace render path decisions
-          (format *error-output* "~&[RD] first=~A dirty=~A snap=~A newdl=~A currdl=~A dims=~Ax~A~%"
-                  (mirror-first-frame-drawn-p mirror)
-                  (not (null snapshot))
-                  (if snapshot (length snapshot) 0)
-                  (not (null new-dl))
-                  (not (null (mirror-current-dl mirror)))
-                  (mirror-width mirror) (mirror-height mirror))
+          (log:debug :render "render-delegate-draw: first=~A dirty=~A snap=~A newdl=~A currdl=~A dims=~Ax~A"
+                     (mirror-first-frame-drawn-p mirror)
+                     (not (null snapshot))
+                     (if snapshot (length snapshot) 0)
+                     (not (null new-dl))
+                     (not (null (mirror-current-dl mirror)))
+                     (mirror-width mirror) (mirror-height mirror))
+          ;; Invariant: a non-empty snapshot must always yield a composite DL.
+          ;; If this fires: dims were zero (zero-scale composite) or the
+          ;; builder/Impeller encountered an error.  Check :render log for details.
+          (check-render-invariant
+           (or (null snapshot) new-dl)
+           "composite returned nil for non-empty snapshot (n=~A); win=~A dims=~Ax~A"
+           (if snapshot (length snapshot) 0)
+           (mirror-window-id mirror) (mirror-width mirror) (mirror-height mirror))
           (cond
             ;; First-frame reveal: window is still hidden. Run staged sequence.
             ((not (mirror-first-frame-drawn-p mirror))
@@ -277,15 +321,25 @@ Thread Contract: MUST be called on main thread."
                (setf (mirror-composite-deps mirror) snapshot)))
             ;; New composite DL produced - update retained DL and draw.
             (new-dl
-             ;; Release old composite deps first (frees sub-DLs the old
-             ;; composite referenced), then replace the composite itself.
-             (%release-composite-deps mirror)
+             ;; Release composite FIRST (so Impeller drops its internal refs to
+             ;; sub-DLs), then release the sub-DLs.  Reverse order risks
+             ;; use-after-free if Impeller holds raw pointers to sub-DLs.
              (let ((old (mirror-current-dl mirror)))
                (when old (frs:release-display-list old)))
+             (%release-composite-deps mirror)
              (setf (mirror-current-dl mirror) new-dl
                    (mirror-composite-deps mirror) snapshot)
              (let ((surface (get-or-create-mirror-surface mirror)))
-               (format *error-output* "~&[RD] COMPOSITE DRAW: surface=~A~%" (not (null surface)))
+               (log:debug :render "composite draw: surface=~A dims=~Ax~A"
+                          (not (null surface)) (mirror-width mirror) (mirror-height mirror))
+               ;; Invariant: valid dims must produce a surface.
+               ;; Fires if Impeller context is nil or FBO surface creation failed.
+               (check-render-invariant
+                (or (zerop (mirror-width mirror)) (zerop (mirror-height mirror)) surface)
+                "surface nil with valid dims ~Ax~A; win=~A ctx=~A"
+                (mirror-width mirror) (mirror-height mirror)
+                (mirror-window-id mirror)
+                (not (null (runtime-impeller-context (port-runtime (mirror-port mirror))))))
                (handler-case
                    (when surface
                      (rs-internals:without-float-traps
@@ -363,6 +417,11 @@ Thread Contract: MUST be called on the main thread."
          (scale-y (if (plusp log-h) (float (/ phys-h log-h) 1.0f0) 1.0f0))
          (sorted  (sort (copy-list snapshot) #'<
                         :key (lambda (entry) (%sheet-depth (car entry))))))
+    ;; Safety net: zero dims produce scale=0 (invisible) or nil surface.
+    (when (or (zerop phys-w) (zerop phys-h) (zerop log-w) (zerop log-h))
+      (log:warn :render "composite: zero mirror dims (phys=~Ax~A log=~Ax~A), skipping"
+                phys-w phys-h log-w log-h)
+      (return-from composite-pane-dls-for-mirror nil))
     (handler-case
         (let ((builder (frs:make-display-list-builder)))
           (unwind-protect

@@ -187,10 +187,22 @@ Thread Contract: MUST be called on the main thread."
       (frs:release-surface (mirror-surface mirror)))
     (setf (mirror-surface mirror) nil))
   ;; Refresh dimensions from the SDL3 window (pixel / framebuffer size).
+  ;; Guard: on Wayland the compositor may not have mapped the window yet even
+  ;; after SDL_ShowWindow, so SDL_GetWindowSizeInPixels can return 0.  If we
+  ;; store 0 dims the next composite gets scale=0 (invisible) and
+  ;; get-or-create-mirror-surface returns nil -- both cause a black frame.
+  ;; Retain the previous (logical) dims when SDL3 reports zero.
   (let ((window (mirror-sdl-window mirror)))
     (when window
-      (setf (mirror-width  mirror) (rs-host:framebuffer-width  window)
-            (mirror-height mirror) (rs-host:framebuffer-height window)))))
+      (let ((new-w (rs-host:framebuffer-width  window))
+            (new-h (rs-host:framebuffer-height window)))
+        (if (and (plusp new-w) (plusp new-h))
+            (progn
+              (setf (mirror-width  mirror) new-w
+                    (mirror-height mirror) new-h)
+              (log:debug :render "invalidate-mirror-surface: phys dims=~Ax~A" new-w new-h))
+            (log:warn :render "invalidate-mirror-surface: SDL3 zero dims (~Ax~A), retaining ~Ax~A"
+                      new-w new-h (mirror-width mirror) (mirror-height mirror)))))))
 
 ;;; ============================================================================
 ;;; Cross-Thread Display List Handoff

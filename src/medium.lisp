@@ -765,6 +765,12 @@ Thread Contract: Called on UI thread."
         (when builder
           (handler-case
               (let ((dl (frs:create-display-list builder)))
+                ;; Invariant: create-display-list must return a valid DL object.
+                ;; If this fires the Impeller builder itself failed -- likely a
+                ;; corrupt draw call earlier in this pane's frame.
+                (check-render-invariant dl
+                  "create-display-list returned nil; sheet=~A builder=~A"
+                  (type-of sheet) builder)
                 ;; Builder is spent -- release it and clear the slot.
                 (frs:release-display-list-builder builder)
                 (setf (medium-display-list-builder medium) nil)

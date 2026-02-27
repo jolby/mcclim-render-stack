@@ -629,6 +629,11 @@ active clip region. No-op (zero save/restore overhead) when clip is +everywhere+
          (ink (medium-ink medium))
          (tr (%get-medium-transformation medium))
          (builder (%get-medium-builder medium)))
+    ;; T6 DIAGNOSTIC: confirm draw methods are called and what ink/coords are used.
+    (log:info :render "draw-rect*: ink=~A sheet=~A x1=~,1f y1=~,1f x2=~,1f y2=~,1f filled=~A builder=~A"
+              (type-of ink) (type-of (medium-sheet medium))
+              (float x1 1.0f0) (float y1 1.0f0) (float x2 1.0f0) (float y2 1.0f0)
+              filled (not (null builder)))
     (when builder
       (with-ink-on-paint (paint ink medium)
         (if filled
@@ -670,6 +675,12 @@ active clip region. No-op (zero save/restore overhead) when clip is +everywhere+
    start-angle and end-angle are in radians (nil means full ellipse).
    filled: T to fill, NIL to stroke."
   (declare (ignore start-angle end-angle))
+  ;; T6 DIAGNOSTIC: confirm ellipse draw is called.
+  (log:info :render "draw-ellipse*: ink=~A cx=~,1f cy=~,1f r1dx=~,1f r1dy=~,1f r2dx=~,1f r2dy=~,1f"
+            (type-of (medium-ink medium))
+            (float center-x 1.0f0) (float center-y 1.0f0)
+            (float radius-1-dx 1.0f0) (float radius-1-dy 1.0f0)
+            (float radius-2-dx 1.0f0) (float radius-2-dy 1.0f0))
   (let* ((paint (%get-medium-paint medium))
          (ink (medium-ink medium))
          (tr (%get-medium-transformation medium))
@@ -707,6 +718,11 @@ active clip region. No-op (zero save/restore overhead) when clip is +everywhere+
 
    toward-x/y and transform-glyphs are ignored in Phase 2."
    (declare (ignore toward-x toward-y transform-glyphs))
+   ;; T6 DIAGNOSTIC: confirm text draw is called.
+   (log:info :render "draw-text*: ink=~A sheet=~A str=~S x=~,1f y=~,1f"
+             (type-of (medium-ink medium)) (type-of (medium-sheet medium))
+             (subseq string (or start 0) (min (+ (or start 0) 20) (length string)))
+             (float x 1.0f0) (float y 1.0f0))
    (let* ((builder (%get-medium-builder medium))
           (tr (%get-medium-transformation medium)))
      (when (and builder
@@ -807,6 +823,10 @@ The render loop on the main thread handles presentation."
     (when builder
       (multiple-value-bind (r g b a)
           (clim-ink-to-impeller-color ink medium)
+        ;; T5 DIAGNOSTIC: log what color clears are using.
+        (log:info :render "clear-area: ink=~A rgba=(~,2f ~,2f ~,2f ~,2f) sheet=~A l=~,1f t=~,1f r=~,1f b=~,1f"
+                  (type-of ink) r g b a (type-of (medium-sheet medium))
+                  (float left 1.0f0) (float top 1.0f0) (float right 1.0f0) (float bottom 1.0f0))
         (frs:paint-set-color paint r g b a)
         (frs:paint-set-draw-style paint :fill)
         (climi::with-transformed-positions* (tr left top right bottom)

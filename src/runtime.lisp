@@ -167,7 +167,7 @@ MUST be called on the main thread.  Idempotent — safe to call multiple times."
   ;; before any other log:* call in this method.
   ;; (rs-internals:ensure-logging-initialized)
   (rs-internals:setup-dev-logging)
-  (log:info :initialize-runtime "Loggin initialized!")
+  (log:info :initialize-runtime "Logging initialized!")
   (unless (runtime-initialized-p runtime)
     (log:info :mcclim-render-stack "Initializing runtime on main thread")
 
@@ -441,6 +441,16 @@ Thread Contract: MUST be called on the main thread."
                 ;; Global HiDPI scale -- pane DLs draw in logical device coords
                 ;; (native offset already baked in), scale converts to physical.
                 (frs:display-list-builder-scale builder scale-x scale-y)
+                ;; T5 DIAGNOSTIC: explicit white background before pane DLs.
+                ;; If window turns white -> pane DLs draw transparent/empty (ink issue).
+                ;; If still black -> pane DLs overwrite with opaque black (color mapping issue).
+                (let ((bg-paint (frs:make-paint)))
+                  (frs:paint-set-color bg-paint 1.0 1.0 1.0 1.0)
+                  (frs:draw-rect builder 0.0 0.0
+                                 (float (/ phys-w scale-x) 1.0f0)
+                                 (float (/ phys-h scale-y) 1.0f0)
+                                 bg-paint)
+                  (frs:release-paint bg-paint))
                 (dolist (entry sorted)
                   (let ((sheet (car entry))
                         (dl    (cdr entry)))

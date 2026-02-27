@@ -783,27 +783,6 @@ Thread Contract: Called on UI thread."
       (let ((builder (medium-display-list-builder medium)))
         (log:debug :render "medium-finish-output: builder=~A" builder)
         (when builder
-          ;; T7 DIAGNOSTIC: inject a bright red rect into the builder
-          ;; right before finalizing into a DL. Uses device coords
-          ;; (sheet-native-transformation offset) so the rect lands
-          ;; inside the composite clip region for this pane.
-          ;; If red rects appear → pane DL pipeline works → bug is in drawing ops.
-          ;; If NOT → composite/DL pipeline discards or clips pane content.
-          (multiple-value-bind (t7-ox t7-oy)
-              (clim:transform-position
-               (climi::sheet-native-transformation sheet) 0 0)
-            (let ((diag-paint (frs:make-paint)))
-              (frs:paint-set-color diag-paint 1.0 0.0 0.0 1.0)
-              (frs:paint-set-draw-style diag-paint :fill)
-              (frs:draw-rect builder
-                             (float (+ t7-ox 10) 1.0f0)
-                             (float (+ t7-oy 10) 1.0f0)
-                             80.0f0 40.0f0
-                             diag-paint)
-              (frs:release-paint diag-paint))
-            (log:info :render "T7: injected red rect at (~,1f,~,1f) for ~A"
-                      (float (+ t7-ox 10) 1.0f0) (float (+ t7-oy 10) 1.0f0)
-                      (type-of sheet)))
           (handler-case
               (let ((dl (frs:create-display-list builder)))
                 ;; Invariant: create-display-list must return a valid DL object.

@@ -340,9 +340,21 @@ Thread Contract: MUST be called on main thread."
                 (mirror-width mirror) (mirror-height mirror)
                 (mirror-window-id mirror)
                 (not (null (runtime-impeller-context (port-runtime (mirror-port mirror))))))
+               ;; T2 DIAGNOSTIC: draw white rect to confirm surface is alive.
+               ;; If white appears -> surface is fine, new-dl content is wrong.
+               ;; If still black -> surface/GL state issue post-swap.
                (handler-case
                    (when surface
                      (rs-internals:without-float-traps
+                       (frs:with-display-list-builder (probe-builder)
+                         (let ((p (frs:make-paint)))
+                           (frs:paint-set-color p 1.0 1.0 1.0 1.0)
+                           (frs:draw-rect probe-builder 0.0 0.0
+                                          (float (mirror-width mirror) 1.0f0)
+                                          (float (mirror-height mirror) 1.0f0)
+                                          p)
+                           (frs:release-paint p))
+                         (frs:execute-display-list surface probe-builder))
                        (frs:surface-draw-display-list surface new-dl)))
                  (error (e)
                    (log:error :render "Error drawing composite DL: ~A" e))))
@@ -440,6 +452,11 @@ Thread Contract: MUST be called on the main thread."
                               (clim:bounding-rectangle* (clim:sheet-region sheet))
                             (let ((lw (float (- rx2 rx1) 1.0f0))
                                   (lh (float (- ry2 ry1) 1.0f0)))
+                              ;; T3 DIAGNOSTIC: log pane geometry to detect off-screen / zero coords.
+                              (log:info :render "composite pane ~A: lx=~,1f ly=~,1f lw=~,1f lh=~,1f scale=~,3f/~,3f"
+                                        (type-of sheet)
+                                        (float lx 1.0f0) (float ly 1.0f0) lw lh
+                                        scale-x scale-y)
                               (when (and (plusp lw) (plusp lh))
                                 (frs:display-list-builder-save builder)
                                 (frs:display-list-builder-clip-rect

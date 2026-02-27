@@ -121,6 +121,10 @@ Returns NIL if no render-stack-mirror is associated with this medium's sheet."
                                                :log-w log-w :log-h log-h
                                                :scale-x scale-x :scale-y scale-y)
               (log:debug :render "Creating DL builder"))
+            ;; T4 DIAGNOSTIC: log device transformation to see if pane DLs carry offset/scale.
+            (log:info :render "DL builder created: device-tr=~A sheet=~A"
+                      (climi::medium-device-transformation medium)
+                      (type-of (medium-sheet medium)))
             #+(or)(frs:display-list-builder-set-transform builder scale-x scale-y 0.0f0 0.0f0))
           (setf (medium-display-list-builder medium) builder)
           builder))))

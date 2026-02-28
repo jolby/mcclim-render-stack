@@ -101,7 +101,14 @@ after the first SDL3 GL context is made current.")
     :initform nil
     :documentation "Plist of phase → ms, populated during startup for post-init inspection.
 E.g. (:sdl3-video-init 8 :typography-context 45 :impeller-context 180).
-Populated by initialize-runtime and initialize-runtime-impeller-context."))
+Populated by initialize-runtime and initialize-runtime-impeller-context.")
+   (flow-context
+    :accessor runtime-flow-context
+    :initform nil
+    :documentation "Long-lived Flow compositor context with raster cache.
+Created in initialize-runtime-impeller-context after the Impeller context is ready.
+Shared across all mirrors -- not tied to a specific window.
+Released in shutdown-runtime."))
   (:documentation "Consolidated render-stack runtime state for McCLIM.
 
 Replaces the previous global-variable architecture:
@@ -229,7 +236,15 @@ Idempotent — created only once regardless of window count."))
     (check-startup-invariant (runtime-impeller-context runtime)
       :startup "Fatal: Impeller GL context creation failed (GL context may be invalid)")
     (log:info :mcclim-render-stack "Impeller GL context created: ~A"
-              (runtime-impeller-context runtime))))
+              (runtime-impeller-context runtime)))
+  (unless (runtime-flow-context runtime)
+    (%with-startup-phase runtime :flow-context
+      (setf (runtime-flow-context runtime)
+            (rs-internals:without-float-traps
+              (frs:make-compositor-context))))
+    (check-startup-invariant (runtime-flow-context runtime)
+      :startup "Fatal: Flow compositor context creation failed")
+    (log:info :mcclim-render-stack "Flow compositor context created")))
 
 ;;; ============================================================================
 ;;; Render-Delegate Protocol
@@ -288,14 +303,14 @@ Thread Contract: MUST be called on main thread."
           (uiop:quit 0))))
     (let ((mirrors (collect-registered-mirrors port)))
       (dolist (mirror mirrors)
-        ;; Snapshot pane DLs when frame-dirty-p is set, then composite them.
+        ;; Snapshot pane DLs when frame-dirty-p is set, then composite via Flow.
         (let* ((snapshot
                 (when (bt2:with-lock-held ((mirror-dl-lock mirror))
                         (mirror-frame-dirty-p mirror))
                   (mirror-snapshot-pane-dls mirror)))
                (new-dl
                 (when snapshot
-                  (composite-pane-dls-for-mirror mirror snapshot))))
+                  (%composite-via-flow runtime mirror snapshot))))
           (log:debug :render "render-delegate-draw: first=~A dirty=~A snap=~A newdl=~A currdl=~A dims=~Ax~A"
                      (mirror-first-frame-drawn-p mirror)
                      (not (null snapshot))
@@ -311,24 +326,22 @@ Thread Contract: MUST be called on main thread."
            "composite returned nil for non-empty snapshot (n=~A); win=~A dims=~Ax~A"
            (if snapshot (length snapshot) 0)
            (mirror-window-id mirror) (mirror-width mirror) (mirror-height mirror))
+          ;; With Flow compositor, snapshot DLs are no longer referenced by the
+          ;; scene DL (Flow rasterized them into textures internally).  Release
+          ;; them now regardless of which path runs below.
+          (when snapshot
+            (%release-composite-deps mirror)
+            (dolist (entry snapshot)
+              (frs:release-display-list (cdr entry))))
           (cond
             ;; First-frame reveal: window is still hidden. Run staged sequence.
             ((not (mirror-first-frame-drawn-p mirror))
-             (perform-first-frame-reveal mirror new-dl)
-             ;; Keep snapshot DLs alive -- composite references them.
-             (when snapshot
-               (%release-composite-deps mirror)
-               (setf (mirror-composite-deps mirror) snapshot)))
+             (perform-first-frame-reveal mirror new-dl))
             ;; New composite DL produced - update retained DL and draw.
             (new-dl
-             ;; Release composite FIRST (so Impeller drops its internal refs to
-             ;; sub-DLs), then release the sub-DLs.  Reverse order risks
-             ;; use-after-free if Impeller holds raw pointers to sub-DLs.
              (let ((old (mirror-current-dl mirror)))
                (when old (frs:release-display-list old)))
-             (%release-composite-deps mirror)
-             (setf (mirror-current-dl mirror) new-dl
-                   (mirror-composite-deps mirror) snapshot)
+             (setf (mirror-current-dl mirror) new-dl)
              (let ((surface (get-or-create-mirror-surface mirror)))
                (log:debug :render "composite draw: surface=~A dims=~Ax~A"
                           (not (null surface)) (mirror-width mirror) (mirror-height mirror))
@@ -391,71 +404,6 @@ Used to sort pane DLs for back-to-front compositing (painter's algorithm)."
         while s
         count 1))
 
-(defun composite-pane-dls-for-mirror (mirror snapshot)
-  "Build and return a retained composite display list from SNAPSHOT for MIRROR.
-
-SNAPSHOT is an alist ((sheet . dl) ...) with each DL already retained by
-the caller (via mirror-snapshot-pane-dls).  Pane DLs are sorted by sheet
-depth (shallowest first) for correct back-to-front compositing -- parent
-pane backgrounds are drawn before child pane content.
-
-A global HiDPI scale is applied once at the top of the composite builder;
-pane DLs draw in logical device coords (native offset already baked in via
-medium-device-transformation).  Per-pane clipping uses logical coords.
-
-Returns a retained ImpellerDisplayList on success, NIL if snapshot is empty
-or build fails.  The caller must release the returned DL.
-
-Thread Contract: MUST be called on the main thread."
-  (when (null snapshot)
-    (return-from composite-pane-dls-for-mirror nil))
-  (let* ((phys-w  (mirror-width  mirror))
-         (phys-h  (mirror-height mirror))
-         (log-w   (mirror-logical-width  mirror))
-         (log-h   (mirror-logical-height mirror))
-         (scale-x (if (plusp log-w) (float (/ phys-w log-w) 1.0f0) 1.0f0))
-         (scale-y (if (plusp log-h) (float (/ phys-h log-h) 1.0f0) 1.0f0))
-         (sorted  (sort (copy-list snapshot) #'<
-                        :key (lambda (entry) (%sheet-depth (car entry))))))
-    ;; Safety net: zero dims produce scale=0 (invisible) or nil surface.
-    (when (or (zerop phys-w) (zerop phys-h) (zerop log-w) (zerop log-h))
-      (log:warn :render "composite: zero mirror dims (phys=~Ax~A log=~Ax~A), skipping"
-                phys-w phys-h log-w log-h)
-      (return-from composite-pane-dls-for-mirror nil))
-    (handler-case
-        (let ((builder (frs:make-display-list-builder)))
-          (unwind-protect
-              (progn
-                ;; Global HiDPI scale -- pane DLs draw in logical device coords
-                ;; (native offset already baked in), scale converts to physical.
-                (frs:display-list-builder-scale builder scale-x scale-y)
-                (dolist (entry sorted)
-                  (let ((sheet (car entry))
-                        (dl    (cdr entry)))
-                    (handler-case
-                        (multiple-value-bind (lx ly)
-                            (clim:transform-position
-                             (climi::sheet-native-transformation sheet) 0 0)
-                          (multiple-value-bind (rx1 ry1 rx2 ry2)
-                              (clim:bounding-rectangle* (clim:sheet-region sheet))
-                            (let ((lw (float (- rx2 rx1) 1.0f0))
-                                  (lh (float (- ry2 ry1) 1.0f0)))
-                              (when (and (plusp lw) (plusp lh))
-                                (frs:display-list-builder-save builder)
-                                (frs:display-list-builder-clip-rect
-                                 builder
-                                 (float lx 1.0f0) (float ly 1.0f0)
-                                 lw lh)
-                                (frs:display-list-builder-draw-display-list builder dl 1.0)
-                                (frs:display-list-builder-restore builder)))))
-                      (error (e)
-                        (log:warn :render "composite: pane ~A positioning error: ~A"
-                                  (type-of sheet) e)))))
-                (frs:create-display-list builder))
-            (frs:release-display-list-builder builder)))
-      (error (e)
-        (log:error :render "composite: build error: ~A" e)
-        nil))))
 
 (defun perform-first-frame-reveal (mirror dl)
   "Execute the staged first-frame reveal sequence for MIRROR.
@@ -546,6 +494,12 @@ Should be called on application exit, on the main thread."
     (log:info :mcclim-render-stack "Shutting down render engine")
     (render-stack:render-engine-stop (runtime-engine runtime))
     (setf (runtime-engine runtime) nil))
+
+  (when (runtime-flow-context runtime)
+    (log:info :mcclim-render-stack "Releasing Flow compositor context")
+    (rs-internals:without-float-traps
+      (frs:release-compositor-context (runtime-flow-context runtime)))
+    (setf (runtime-flow-context runtime) nil))
 
   (when (runtime-impeller-context runtime)
     (log:info :mcclim-render-stack "Releasing Impeller context")

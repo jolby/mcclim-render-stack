@@ -346,6 +346,10 @@ Thread Contract: Called on UI thread. Impeller/SDL3 cleanup on main thread."
           (when (mirror-current-dl mirror)
             (frs:release-display-list (mirror-current-dl mirror))
             (setf (mirror-current-dl mirror) nil))
+          ;; Release Flow previous-layer-tree retained for frame-damage diffing.
+          (when (mirror-previous-layer-tree mirror)
+            (frs:release-layer-tree (mirror-previous-layer-tree mirror))
+            (setf (mirror-previous-layer-tree mirror) nil))
           ;; Release composite dependency DLs (sub-DLs referenced by composite).
           (when (mirror-composite-deps mirror)
             (dolist (entry (mirror-composite-deps mirror))

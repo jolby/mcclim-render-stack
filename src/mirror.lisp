@@ -107,7 +107,14 @@ Main-thread-owned -- no lock needed.")
     :accessor mirror-first-frame-drawn-p
     :documentation "T after the first complete frame (draw + gl-swap-buffer + show) has executed.
 On nil→T transition the window is shown and mirror-width/height refreshed from SDL3.
-The render-delegate-draw first-frame path sets this after perform-first-frame-reveal."))
+The render-delegate-draw first-frame path sets this after perform-first-frame-reveal.")
+   (previous-layer-tree
+    :initform nil
+    :accessor mirror-previous-layer-tree
+    :documentation "Flow layer tree retained from the previous frame.
+Used by frame-damage to diff against the current tree and limit GPU work.
+Written/read exclusively on the main thread -- no lock needed.
+Released on mirror destroy or when replaced after a new composite."))
   (:documentation
    "The canonical McCLIM mirror for an SDL3 window.
 

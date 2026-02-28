@@ -311,13 +311,13 @@ Thread Contract: MUST be called on main thread."
                (new-dl
                 (when snapshot
                   (%composite-via-flow runtime mirror snapshot))))
-          (log:debug :render "render-delegate-draw: first=~A dirty=~A snap=~A newdl=~A currdl=~A dims=~Ax~A"
-                     (mirror-first-frame-drawn-p mirror)
-                     (not (null snapshot))
-                     (if snapshot (length snapshot) 0)
-                     (not (null new-dl))
-                     (not (null (mirror-current-dl mirror)))
-                     (mirror-width mirror) (mirror-height mirror))
+          (log:info :render "render-delegate-draw: first=~A dirty=~A snap=~A newdl=~A currdl=~A dims=~Ax~A"
+                    (mirror-first-frame-drawn-p mirror)
+                    (not (null snapshot))
+                    (if snapshot (length snapshot) 0)
+                    (not (null new-dl))
+                    (not (null (mirror-current-dl mirror)))
+                    (mirror-width mirror) (mirror-height mirror))
           ;; Invariant: a non-empty snapshot must always yield a composite DL.
           ;; If this fires: dims were zero (zero-scale composite) or the
           ;; builder/Impeller encountered an error.  Check :render log for details.
@@ -343,8 +343,8 @@ Thread Contract: MUST be called on main thread."
                (when old (frs:release-display-list old)))
              (setf (mirror-current-dl mirror) new-dl)
              (let ((surface (get-or-create-mirror-surface mirror)))
-               (log:debug :render "composite draw: surface=~A dims=~Ax~A"
-                          (not (null surface)) (mirror-width mirror) (mirror-height mirror))
+               (log:info :render "composite draw: surface=~A dims=~Ax~A"
+                         (not (null surface)) (mirror-width mirror) (mirror-height mirror))
                ;; Invariant: valid dims must produce a surface.
                ;; Fires if Impeller context is nil or FBO surface creation failed.
                (check-render-invariant
@@ -359,13 +359,15 @@ Thread Contract: MUST be called on main thread."
                        (frs:surface-draw-display-list surface new-dl)))
                  (error (e)
                    (log:error :render "Error drawing composite DL: ~A" e))))
-             (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror)))
+               (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror)))
             ;; Not dirty - redraw retained DL if available, else test pattern.
             (t
              (let ((current (mirror-current-dl mirror)))
                (if current
                    (handler-case
                        (let ((surface (get-or-create-mirror-surface mirror)))
+                         (log:info :render "retained-dl redraw: surface=~A current-dl=~A"
+                                   (not (null surface)) (not (null current)))
                          (when surface
                            (rs-internals:without-float-traps
                              (frs:surface-draw-display-list surface current))))
@@ -465,6 +467,8 @@ get-or-create-mirror-surface).
 Thread Contract: MUST be called on main thread."
   (rs-internals:assert-main-thread draw-test-pattern-for-mirror)
   (let ((surface (get-or-create-mirror-surface mirror)))
+    (log:info :render "draw-test-pattern: surface=~A dims=~Ax~A"
+              (not (null surface)) (mirror-width mirror) (mirror-height mirror))
     (when surface
       (let ((width  (float (mirror-width  mirror) 1.0f0))
             (height (float (mirror-height mirror) 1.0f0)))

@@ -207,7 +207,7 @@ Thread Contract: MUST be called on the main thread."
             (progn
               (setf (mirror-width  mirror) new-w
                     (mirror-height mirror) new-h)
-              (log:debug :render "invalidate-mirror-surface: phys dims=~Ax~A" new-w new-h))
+              (log:info :render "invalidate-mirror-surface: phys dims=~Ax~A" new-w new-h))
             (log:warn :render "invalidate-mirror-surface: SDL3 zero dims (~Ax~A), retaining ~Ax~A"
                       new-w new-h (mirror-width mirror) (mirror-height mirror)))))))
 

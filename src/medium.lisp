@@ -801,7 +801,7 @@ Thread Contract: Called on UI thread."
                       (frs:release-display-list old-dl)))
                   (setf (gethash sheet (mirror-pane-dl-map mirror)) dl)
                   (setf (mirror-frame-dirty-p mirror) t))
-                (log:debug :render "Stored pane DL ~A for sheet ~A" dl (type-of sheet)))
+                (log:info :render "Stored pane DL ~A for sheet ~A" dl (type-of sheet)))
             (error (e)
               (log:error :render "medium-finish-output error: ~A" e)
               ;; Avoid leaking the builder on error.

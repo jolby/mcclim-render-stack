@@ -75,26 +75,32 @@ Thread Contract: MUST be called on the main thread."
             ;; Tree now retains root. Release our reference.
             (frs:release-transform-layer root)
             ;; Add one clip+DL subtree per pane.
-            (dolist (entry sorted)
-              (let ((sheet (car entry))
-                    (dl    (cdr entry)))
-                (multiple-value-bind (lx ly lw lh)
-                    (%pane-logical-bounds sheet)
-                  (when (and lx (plusp lw) (plusp lh))
-                    (handler-case
-                        (let* ((clip (frs:make-clip-rect-layer lx ly lw lh))
-                               (leaf (frs:make-display-list-layer dl)))
-                          ;; leaf -> clip -> root.  Each add-child retains;
-                          ;; release our ref after handing off.
-                          (frs:clip-rect-layer-add-child
-                           clip (frs:display-list-layer-as-container leaf))
-                          (frs:release-display-list-layer leaf)
-                          (frs:transform-layer-add-child
-                           root-container (frs:clip-rect-layer-as-container clip))
-                          (frs:release-clip-rect-layer clip))
-                      (error (e)
-                        (log:warn :render "build-pane-layer-tree: pane ~A: ~A"
-                                  (type-of sheet) e)))))))
+            (let ((pane-count 0))
+              (dolist (entry sorted)
+                (let ((sheet (car entry))
+                      (dl    (cdr entry)))
+                  (multiple-value-bind (lx ly lw lh)
+                      (%pane-logical-bounds sheet)
+                    (log:info :render "build-pane-layer-tree: pane ~A bounds lx=~A ly=~A lw=~A lh=~A dl=~A"
+                              (type-of sheet) lx ly lw lh (not (null dl)))
+                    (when (and lx (plusp lw) (plusp lh))
+                      (handler-case
+                          (let* ((clip (frs:make-clip-rect-layer lx ly lw lh))
+                                 (leaf (frs:make-display-list-layer dl)))
+                            ;; leaf -> clip -> root.  Each add-child retains;
+                            ;; release our ref after handing off.
+                            (frs:clip-rect-layer-add-child
+                             clip (frs:display-list-layer-as-container leaf))
+                            (frs:release-display-list-layer leaf)
+                            (frs:transform-layer-add-child
+                             root-container (frs:clip-rect-layer-as-container clip))
+                            (frs:release-clip-rect-layer clip)
+                            (incf pane-count))
+                        (error (e)
+                          (log:warn :render "build-pane-layer-tree: pane ~A: ~A"
+                                    (type-of sheet) e)))))))
+              (log:info :render "build-pane-layer-tree: added ~A panes, scale=~Ax~A phys=~Ax~A log=~Ax~A"
+                        pane-count scale-x scale-y phys-w phys-h log-w log-h))
             tree)
         (error (e)
           (log:error :render "build-pane-layer-tree: ~A" e)
@@ -131,11 +137,19 @@ Thread Contract: MUST be called on the main thread."
       (handler-case
           (let (scene-dl)
             (rs-internals:without-float-traps
-              (frs:with-scoped-frame (frame flow-ctx impeller-ctx (cons phys-w phys-h))
+              ;; Pass null-pointer for Impeller context: the Flow compositor only
+              ;; records layer paint ops into a DisplayListBuilder.  A real Impeller
+              ;; context routes through PaintLayerTreeImpeller which produces empty
+              ;; results; null routes through PaintLayerTreeSkia (recording path).
+              ;; The real Impeller context is used later by surface-draw-display-list.
+              (frs:with-scoped-frame (frame flow-ctx (cffi:null-pointer) (cons phys-w phys-h))
                 (let ((status (frs:scoped-frame-raster frame tree)))
+                  (log:info :render "%composite-via-flow: raster status=~A phys=~Ax~A"
+                            status phys-w phys-h)
                   (if (eq status :success)
                       (setf scene-dl (frs:scoped-frame-build-display-list frame))
-                      (log:warn :render "%composite-via-flow: raster status ~A" status)))))
+                      (log:warn :render "%composite-via-flow: raster failed: ~A" status)))))
+            (log:info :render "%composite-via-flow: scene-dl=~A" (not (null scene-dl)))
             ;; Retain tree as previous for next frame's damage diffing.
             (let ((old (mirror-previous-layer-tree mirror)))
               (when old (frs:release-layer-tree old)))

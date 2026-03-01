@@ -346,21 +346,26 @@ Thread Contract: MUST be called on main thread."
                (log:info :render "composite draw: surface=~A dims=~Ax~A"
                          (not (null surface)) (mirror-width mirror) (mirror-height mirror))
                (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror)))
-              ;; Not dirty — re-composite from retained layer tree, else test pattern.
-              ;; The scene DL from scoped-frame-build-display-list is frame-scoped
-              ;; and cannot be reused outside the scoped frame where it was created
-              ;; (surface-draw-display-list produces black). Re-compositing from the
-              ;; retained previous-layer-tree in a new scoped frame is correct.
+              ;; Not dirty — draw the retained scene DL directly.
+              ;; mirror-current-dl is the scene DL from the last composite, owned
+              ;; by the caller (ImpellerSurfaceDrawDisplayListNew returns ownership).
+              ;; It is valid outside the scoped frame — the DL is self-contained.
+              ;; NOTE: FlowDisplayListLayerNew takes a raw void* and does NOT retain
+              ;; the pane ImpellerDisplayLists; re-rasterizing mirror-previous-layer-tree
+              ;; after the snapshot DLs are released causes use-after-free → black.
+              ;; Drawing the scene DL directly avoids this entirely.
               (t
-               (let ((prev-tree (mirror-previous-layer-tree mirror)))
-                 (if prev-tree
+               (let ((current-dl (mirror-current-dl mirror)))
+                 (if current-dl
                      (handler-case
                          (progn
-                           (log:info :render "retained re-composite: surface=~A prev-tree=T"
+                           (log:info :render "retained-dl draw: surface=~A current-dl=T"
                                      (not (null surface)))
-                           (%redraw-retained-tree runtime mirror surface prev-tree))
+                           (when surface
+                             (rs-internals:without-float-traps
+                               (frs:surface-draw-display-list surface current-dl))))
                        (error (e)
-                         (log:error :render "Error in retained re-composite: ~A" e)))
+                         (log:error :render "Error in retained-dl draw: ~A" e)))
                      (draw-test-pattern-for-mirror mirror)))
                (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror))))))))))
 

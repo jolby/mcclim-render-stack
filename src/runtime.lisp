@@ -303,78 +303,66 @@ Thread Contract: MUST be called on main thread."
           (uiop:quit 0))))
     (let ((mirrors (collect-registered-mirrors port)))
       (dolist (mirror mirrors)
-        ;; Snapshot pane DLs when frame-dirty-p is set, then composite via Flow.
-        (let* ((snapshot
-                (when (bt2:with-lock-held ((mirror-dl-lock mirror))
-                        (mirror-frame-dirty-p mirror))
-                  (mirror-snapshot-pane-dls mirror)))
-               (new-dl
-                (when snapshot
-                  (%composite-via-flow runtime mirror snapshot))))
-          (log:info :render "render-delegate-draw: first=~A dirty=~A snap=~A newdl=~A currdl=~A dims=~Ax~A"
-                    (mirror-first-frame-drawn-p mirror)
-                    (not (null snapshot))
-                    (if snapshot (length snapshot) 0)
-                    (not (null new-dl))
-                    (not (null (mirror-current-dl mirror)))
-                    (mirror-width mirror) (mirror-height mirror))
-          ;; Invariant: a non-empty snapshot must always yield a composite DL.
-          ;; If this fires: dims were zero (zero-scale composite) or the
-          ;; builder/Impeller encountered an error.  Check :render log for details.
-          (check-render-invariant
-           (or (null snapshot) new-dl)
-           "composite returned nil for non-empty snapshot (n=~A); win=~A dims=~Ax~A"
-           (if snapshot (length snapshot) 0)
-           (mirror-window-id mirror) (mirror-width mirror) (mirror-height mirror))
-          ;; With Flow compositor, snapshot DLs are no longer referenced by the
-          ;; scene DL (Flow rasterized them into textures internally).  Release
-          ;; them now regardless of which path runs below.
-          (when snapshot
-            (%release-composite-deps mirror)
-            (dolist (entry snapshot)
-              (frs:release-display-list (cdr entry))))
-          (cond
-            ;; First-frame reveal: window is still hidden. Run staged sequence.
-            ((not (mirror-first-frame-drawn-p mirror))
-             (perform-first-frame-reveal mirror new-dl))
-            ;; New composite DL produced - update retained DL and draw.
-            (new-dl
-             (let ((old (mirror-current-dl mirror)))
-               (when old (frs:release-display-list old)))
-             (setf (mirror-current-dl mirror) new-dl)
-             (let ((surface (get-or-create-mirror-surface mirror)))
+        ;; Get surface early — needed by %composite-via-flow to draw inside
+        ;; the scoped frame (scene DL may reference frame-scoped state).
+        (let ((surface (get-or-create-mirror-surface mirror)))
+          ;; Snapshot pane DLs when frame-dirty-p is set, then composite via Flow.
+          (let* ((snapshot
+                  (when (bt2:with-lock-held ((mirror-dl-lock mirror))
+                          (mirror-frame-dirty-p mirror))
+                    (mirror-snapshot-pane-dls mirror)))
+                 (new-dl
+                  (when snapshot
+                    (%composite-via-flow runtime mirror snapshot surface))))
+            (log:info :render "render-delegate-draw: first=~A dirty=~A snap=~A newdl=~A currdl=~A dims=~Ax~A"
+                      (mirror-first-frame-drawn-p mirror)
+                      (not (null snapshot))
+                      (if snapshot (length snapshot) 0)
+                      (not (null new-dl))
+                      (not (null (mirror-current-dl mirror)))
+                      (mirror-width mirror) (mirror-height mirror))
+            ;; Invariant: a non-empty snapshot must always yield a composite DL.
+            (check-render-invariant
+             (or (null snapshot) new-dl)
+             "composite returned nil for non-empty snapshot (n=~A); win=~A dims=~Ax~A"
+             (if snapshot (length snapshot) 0)
+             (mirror-window-id mirror) (mirror-width mirror) (mirror-height mirror))
+            ;; Release snapshot DLs — the scene DL was already drawn to the
+            ;; surface inside %composite-via-flow's scoped frame.
+            (when snapshot
+              (%release-composite-deps mirror)
+              (dolist (entry snapshot)
+                (frs:release-display-list (cdr entry))))
+            (cond
+              ;; First-frame reveal: window is still hidden. Run staged sequence.
+              ((not (mirror-first-frame-drawn-p mirror))
+               (perform-first-frame-reveal mirror new-dl))
+              ;; New composite DL — already drawn to surface by %composite-via-flow.
+              ;; Store for retained redraw, then swap.
+              (new-dl
+               (let ((old (mirror-current-dl mirror)))
+                 (when old (frs:release-display-list old)))
+               (setf (mirror-current-dl mirror) new-dl)
                (log:info :render "composite draw: surface=~A dims=~Ax~A"
                          (not (null surface)) (mirror-width mirror) (mirror-height mirror))
-               ;; Invariant: valid dims must produce a surface.
-               ;; Fires if Impeller context is nil or FBO surface creation failed.
-               (check-render-invariant
-                (or (zerop (mirror-width mirror)) (zerop (mirror-height mirror)) surface)
-                "surface nil with valid dims ~Ax~A; win=~A ctx=~A"
-                (mirror-width mirror) (mirror-height mirror)
-                (mirror-window-id mirror)
-                (not (null (runtime-impeller-context (port-runtime (mirror-port mirror))))))
-               (handler-case
-                   (when surface
-                     (rs-internals:without-float-traps
-                       (frs:surface-draw-display-list surface new-dl)))
-                 (error (e)
-                   (log:error :render "Error drawing composite DL: ~A" e))))
                (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror)))
-            ;; Not dirty - redraw retained DL if available, else test pattern.
-            (t
-             (let ((current (mirror-current-dl mirror)))
-               (if current
-                   (handler-case
-                       (let ((surface (get-or-create-mirror-surface mirror)))
-                         (log:info :render "retained-dl redraw: surface=~A current-dl=~A"
-                                   (not (null surface)) (not (null current)))
-                         (when surface
-                           (rs-internals:without-float-traps
-                             (frs:surface-draw-display-list surface current))))
-                     (error (e)
-                       (log:error :render "Error redrawing retained DL: ~A" e)))
-                   (draw-test-pattern-for-mirror mirror)))
-             (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror)))))))))
+              ;; Not dirty — re-composite from retained layer tree, else test pattern.
+              ;; The scene DL from scoped-frame-build-display-list is frame-scoped
+              ;; and cannot be reused outside the scoped frame where it was created
+              ;; (surface-draw-display-list produces black). Re-compositing from the
+              ;; retained previous-layer-tree in a new scoped frame is correct.
+              (t
+               (let ((prev-tree (mirror-previous-layer-tree mirror)))
+                 (if prev-tree
+                     (handler-case
+                         (progn
+                           (log:info :render "retained re-composite: surface=~A prev-tree=T"
+                                     (not (null surface)))
+                           (%redraw-retained-tree runtime mirror surface prev-tree))
+                       (error (e)
+                         (log:error :render "Error in retained re-composite: ~A" e)))
+                     (draw-test-pattern-for-mirror mirror)))
+               (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror))))))))))
 
 ;;; ============================================================================
 ;;; Direct Rendering
@@ -418,8 +406,8 @@ Sequence:
   2. SDL_GL_SwapWindow — content committed to framebuffer.
   3. SDL_ShowWindow   — window appears already painted, no blank flash.
   4. Center window    — physical dims reliable after compositor maps window.
-  5. invalidate-mirror-surface — refreshes mirror-width/height from SDL3.
-     Next frame creates FBO at correct physical dims (handles HiDPI).
+  5. Refresh dims from SDL3; only release FBO surface if dims changed (HiDPI).
+     Releasing a same-size surface corrupts GL state → black frames.
   6. Mark mirror-first-frame-drawn-p T.
 
 Thread Contract: MUST be called on main thread."
@@ -450,14 +438,61 @@ Thread Contract: MUST be called on main thread."
       (rs-sdl3:show-sdl3-window (mirror-sdl-window mirror))))
   ;; 4. Center — compositor has mapped the window; physical dims now reliable.
   (rs-sdl3:center-sdl3-window (mirror-sdl-window mirror))
-  ;; 5. Refresh physical pixel dims. Next frame recreates FBO at correct size.
-  (invalidate-mirror-surface mirror)
+  ;; 5. Refresh physical pixel dims from SDL3.
+  ;;    Only release the FBO surface if dims changed (e.g. HiDPI 2x upscale).
+  ;;    Releasing an Impeller surface that wraps FBO 0 appears to corrupt
+  ;;    GL state — subsequent surface-draw-display-list calls produce black.
+  ;;    All working demos keep the surface object alive across frames; we
+  ;;    match that pattern by preserving the surface when dims are unchanged.
+  (let* ((win    (mirror-sdl-window mirror))
+         (new-w  (when win (rs-host:framebuffer-width  win)))
+         (new-h  (when win (rs-host:framebuffer-height win))))
+    (if (and new-w new-h (plusp new-w) (plusp new-h))
+        (let ((dims-changed (or (/= new-w (mirror-width  mirror))
+                                (/= new-h (mirror-height mirror)))))
+          (when dims-changed
+            ;; Dims changed (HiDPI) — must recreate surface at new pixel size.
+            (when (mirror-surface mirror)
+              (rs-internals:without-float-traps
+                (frs:release-surface (mirror-surface mirror)))
+              (setf (mirror-surface mirror) nil)))
+          (setf (mirror-width  mirror) new-w
+                (mirror-height mirror) new-h)
+          (log:info :render "perform-first-frame-reveal: phys=~Ax~A surface=~A"
+                    new-w new-h (if dims-changed "released(HiDPI)" "kept")))
+        (log:warn :render "perform-first-frame-reveal: SDL3 zero dims (~Ax~A), retaining ~Ax~A"
+                  (or new-w 0) (or new-h 0) (mirror-width mirror) (mirror-height mirror))))
   ;; 6. Mark revealed — normal render path takes over.
   (setf (mirror-first-frame-drawn-p mirror) t)
   (log:info :mcclim-render-stack "First frame revealed: win-id=~A logical=~Ax~A physical=~Ax~A"
             (mirror-window-id mirror)
             (mirror-logical-width mirror) (mirror-logical-height mirror)
             (mirror-width mirror) (mirror-height mirror)))
+
+(defun %redraw-retained-tree (runtime mirror surface tree)
+  "Re-composite TREE to SURFACE using a new scoped frame.
+
+Called on retained (not-dirty) frames when a previous layer tree exists.
+The scene DL from the previous composite is frame-scoped and cannot be
+reused; we re-rasterize the retained layer tree from scratch each frame.
+
+Thread Contract: MUST be called on the main thread."
+  (rs-internals:assert-main-thread %redraw-retained-tree)
+  (let* ((flow-ctx (runtime-flow-context runtime))
+         (phys-w   (mirror-width  mirror))
+         (phys-h   (mirror-height mirror)))
+    (unless (and flow-ctx surface (plusp phys-w) (plusp phys-h))
+      (log:warn :render "%redraw-retained-tree: missing context/surface or zero dims")
+      (return-from %redraw-retained-tree nil))
+    (rs-internals:without-float-traps
+      (frs:with-scoped-frame (frame flow-ctx (cffi:null-pointer) (cons phys-w phys-h))
+        (let ((status (frs:scoped-frame-raster frame tree :ignore-raster-cache t)))
+          (log:info :render "%redraw-retained-tree: raster status=~A" status)
+          (when (eq status :success)
+            (let ((dl (frs:scoped-frame-build-display-list frame)))
+              (when dl
+                (frs:surface-draw-display-list surface dl)
+                (frs:release-display-list dl)))))))))
 
 (defun draw-test-pattern-for-mirror (mirror)
   "Draw a test pattern (white background + blue rectangle) on MIRROR.

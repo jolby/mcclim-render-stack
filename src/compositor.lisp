@@ -106,19 +106,20 @@ Thread Contract: MUST be called on the main thread."
           (log:error :render "build-pane-layer-tree: ~A" e)
           nil)))))
 
-(defun %composite-via-flow (runtime mirror snapshot)
+(defun %composite-via-flow (runtime mirror snapshot surface)
   "Rasterize SNAPSHOT pane DLs through the Flow compositor into a full-scene DL.
 
 Builds a pane layer tree, acquires a scoped frame from the runtime's Flow
-context, rasterizes the tree (using the raster cache for unchanged layers),
-and extracts a full-scene display list.
+context, rasterizes the tree, and extracts a full-scene display list.
+
+SURFACE is the FBO surface to draw to.  The scene DL is drawn to SURFACE
+inside the scoped frame (the DL may reference frame-scoped state).
 
 Retains the layer tree as MIRROR's previous-layer-tree for Phase C damage
-tracking.  SNAPSHOT DLs are not referenced by the returned DL and may be
-released immediately after this call.
+tracking.
 
-Returns a retained ImpellerDisplayList (caller must release), or NIL on
-failure.
+Returns the scene DL (caller must release) on success, or NIL on failure.
+The DL has already been drawn to SURFACE before returning.
 
 Thread Contract: MUST be called on the main thread."
   (rs-internals:assert-main-thread %composite-via-flow)
@@ -143,13 +144,18 @@ Thread Contract: MUST be called on the main thread."
               ;; results; null routes through PaintLayerTreeSkia (recording path).
               ;; The real Impeller context is used later by surface-draw-display-list.
               (frs:with-scoped-frame (frame flow-ctx (cffi:null-pointer) (cons phys-w phys-h))
-                (let ((status (frs:scoped-frame-raster frame tree)))
+                (let ((status (frs:scoped-frame-raster frame tree
+                                                       :ignore-raster-cache t)))
                   (log:info :render "%composite-via-flow: raster status=~A phys=~Ax~A"
                             status phys-w phys-h)
-                  (if (eq status :success)
-                      (setf scene-dl (frs:scoped-frame-build-display-list frame))
-                      (log:warn :render "%composite-via-flow: raster failed: ~A" status)))))
-            (log:info :render "%composite-via-flow: scene-dl=~A" (not (null scene-dl)))
+                  (when (eq status :success)
+                    (setf scene-dl (frs:scoped-frame-build-display-list frame))
+                    ;; Draw scene DL to surface INSIDE scoped frame, matching
+                    ;; the working impeller-flow-composition demo pattern.
+                    (when (and scene-dl surface)
+                      (frs:surface-draw-display-list surface scene-dl))))))
+            (log:info :render "%composite-via-flow: scene-dl=~A drawn-to-surface=~A"
+                      (not (null scene-dl)) (not (null surface)))
             ;; Retain tree as previous for next frame's damage diffing.
             (let ((old (mirror-previous-layer-tree mirror)))
               (when old (frs:release-layer-tree old)))

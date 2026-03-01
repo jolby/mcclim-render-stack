@@ -327,12 +327,26 @@ Thread Contract: MUST be called on main thread."
              "composite returned nil for non-empty snapshot (n=~A); win=~A dims=~Ax~A"
              (if snapshot (length snapshot) 0)
              (mirror-window-id mirror) (mirror-width mirror) (mirror-height mirror))
-            ;; Release snapshot DLs — the scene DL was already drawn to the
-            ;; surface inside %composite-via-flow's scoped frame.
-            (when snapshot
-              (%release-composite-deps mirror)
-              (dolist (entry snapshot)
-                (frs:release-display-list (cdr entry))))
+            ;; Snapshot lifecycle: scene-dl (current-dl) contains raw void*
+            ;; references to pane ImpellerDisplayLists via recorded DrawDisplayList
+            ;; ops. FlowDisplayListLayerNew does not retain them and neither does
+            ;; scoped-frame-build-display-list. If snapshot DLs are released before
+            ;; current-dl is replaced, retained draws dereference freed pointers
+            ;; and produce black output.
+            ;;
+            ;; Correct pattern: keep snapshot alive as composite-deps while
+            ;; current-dl references them. Release OLD composite-deps (for old
+            ;; current-dl) when a new composite succeeds. If composite failed
+            ;; (new-dl nil), release snapshot immediately (no new current-dl).
+            (cond
+              ((and snapshot new-dl)
+               ;; Composite succeeded: swap old deps for new snapshot.
+               (%release-composite-deps mirror)
+               (setf (mirror-composite-deps mirror) snapshot))
+              (snapshot
+               ;; Composite failed: release snapshot now; old deps stay live.
+               (dolist (entry snapshot)
+                 (frs:release-display-list (cdr entry)))))
             (cond
               ;; First-frame reveal: window is still hidden. Run staged sequence.
               ((not (mirror-first-frame-drawn-p mirror))
@@ -346,26 +360,16 @@ Thread Contract: MUST be called on main thread."
                (log:info :render "composite draw: surface=~A dims=~Ax~A"
                          (not (null surface)) (mirror-width mirror) (mirror-height mirror))
                (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror)))
-              ;; Not dirty — draw the retained scene DL directly.
-              ;; mirror-current-dl is the scene DL from the last composite, owned
-              ;; by the caller (ImpellerSurfaceDrawDisplayListNew returns ownership).
-              ;; It is valid outside the scoped frame — the DL is self-contained.
-              ;; NOTE: FlowDisplayListLayerNew takes a raw void* and does NOT retain
-              ;; the pane ImpellerDisplayLists; re-rasterizing mirror-previous-layer-tree
-              ;; after the snapshot DLs are released causes use-after-free → black.
-              ;; Drawing the scene DL directly avoids this entirely.
+              ;; Not dirty — re-composite from stored pane DLs.
+              ;; DL reuse (drawing mirror-current-dl directly) produces black —
+              ;; we do not know why yet (add draw-result logging above to
+              ;; investigate). Rebuilding the layer tree each retained frame
+              ;; matches the working impeller-flow-composition demo pattern
+              ;; exactly and avoids whatever failure mode afflicts DL reuse.
               (t
-               (let ((current-dl (mirror-current-dl mirror)))
-                 (if current-dl
-                     (handler-case
-                         (progn
-                           (log:info :render "retained-dl draw: surface=~A current-dl=T"
-                                     (not (null surface)))
-                           (when surface
-                             (rs-internals:without-float-traps
-                               (frs:surface-draw-display-list surface current-dl))))
-                       (error (e)
-                         (log:error :render "Error in retained-dl draw: ~A" e)))
+               (let ((deps (mirror-composite-deps mirror)))
+                 (if (and deps surface)
+                     (%retained-redraw runtime mirror deps surface)
                      (draw-test-pattern-for-mirror mirror)))
                (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror))))))))))
 
@@ -473,6 +477,41 @@ Thread Contract: MUST be called on main thread."
             (mirror-window-id mirror)
             (mirror-logical-width mirror) (mirror-logical-height mirror)
             (mirror-width mirror) (mirror-height mirror)))
+
+(defun %retained-redraw (runtime mirror deps surface)
+  "Re-composite from DEPS (stored pane DLs) without updating persistent state.
+DEPS is an alist ((sheet . dl) ...) from mirror-composite-deps.
+Builds a fresh layer tree, rasterizes, draws to SURFACE, then releases.
+Does NOT update mirror-composite-deps or mirror-previous-layer-tree.
+Thread Contract: MUST be called on the main thread."
+  (rs-internals:assert-main-thread %retained-redraw)
+  (let* ((flow-ctx (runtime-flow-context runtime))
+         (phys-w   (mirror-width  mirror))
+         (phys-h   (mirror-height mirror)))
+    (unless (and flow-ctx (plusp phys-w) (plusp phys-h))
+      (log:warn :render "%retained-redraw: missing flow-ctx or zero dims")
+      (return-from %retained-redraw nil))
+    (let ((tree (build-pane-layer-tree mirror deps)))
+      (unless tree
+        (log:warn :render "%retained-redraw: build-pane-layer-tree returned nil")
+        (return-from %retained-redraw nil))
+      (handler-case
+          (rs-internals:without-float-traps
+            (let (frame-dl)
+              (frs:with-scoped-frame (frame flow-ctx (cffi:null-pointer) (cons phys-w phys-h))
+                (when (eq (frs:scoped-frame-raster frame tree :ignore-raster-cache t) :success)
+                  (setf frame-dl (frs:scoped-frame-build-display-list frame))))
+              ;; GL state reset — same rationale as %composite-via-flow.
+              (when (and frame-dl surface)
+                (let ((bind-fb (%sdl3:gl-get-proc-address "glBindFramebuffer")))
+                  (unless (cffi:null-pointer-p bind-fb)
+                    (cffi:foreign-funcall-pointer bind-fb () :unsigned-int #x8D40 :unsigned-int 0 :void)))
+                (let ((draw-ok (frs:surface-draw-display-list surface frame-dl)))
+                  (log:info :render "%retained-redraw: draw-result=~A" draw-ok))
+                (frs:release-display-list frame-dl))))
+        (error (e)
+          (log:error :render "%retained-redraw: ~A" e)))
+      (frs:release-layer-tree tree))))
 
 (defun %redraw-retained-tree (runtime mirror surface tree)
   "Re-composite TREE to SURFACE using a new scoped frame.

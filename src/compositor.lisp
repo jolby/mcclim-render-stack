@@ -69,12 +69,12 @@ Thread Contract: MUST be called on the main thread."
       (handler-case
           (let* ((tree  (frs:make-layer-tree phys-w phys-h))
                  ;; Root scale layer: logical coords -> physical pixels.
-                 (root  (frs:make-scale-transform-layer scale-x scale-y))
-                 (root-container (frs:transform-layer-as-container root)))
-            (frs:layer-tree-set-root-layer tree root-container)
-            ;; Tree now retains root. Release our reference.
-            (frs:release-transform-layer root)
-            ;; Add one clip+DL subtree per pane.
+                 ;; Keep root as FlowTransformLayer until all children are added.
+                 ;; Using the container-interface alias (root-container) with
+                 ;; transform-layer-add-child causes UB -- use root directly.
+                 (root  (frs:make-scale-transform-layer scale-x scale-y)))
+            (frs:layer-tree-set-root-layer tree (frs:transform-layer-as-container root))
+            ;; Add one DL subtree per pane.
             (let ((pane-count 0))
               (dolist (entry sorted)
                 (let ((sheet (car entry))
@@ -87,13 +87,13 @@ Thread Contract: MUST be called on the main thread."
                       (handler-case
                           (let* ((clip (frs:make-clip-rect-layer lx ly lw lh))
                                  (leaf (frs:make-display-list-layer dl)))
-                            ;; leaf -> clip -> root.  Each add-child retains;
-                            ;; release our ref after handing off.
+                            ;; leaf -> clip -> root.  Use root (FlowTransformLayer)
+                            ;; directly for add-child, not the container-interface alias.
                             (frs:clip-rect-layer-add-child
                              clip (frs:display-list-layer-as-container leaf))
                             (frs:release-display-list-layer leaf)
                             (frs:transform-layer-add-child
-                             root-container (frs:clip-rect-layer-as-container clip))
+                             root (frs:clip-rect-layer-as-container clip))
                             (frs:release-clip-rect-layer clip)
                             (incf pane-count))
                         (error (e)
@@ -101,6 +101,8 @@ Thread Contract: MUST be called on the main thread."
                                     (type-of sheet) e)))))))
               (log:info :render "build-pane-layer-tree: added ~A panes, scale=~Ax~A phys=~Ax~A log=~Ax~A"
                         pane-count scale-x scale-y phys-w phys-h log-w log-h))
+            ;; All children added. Tree retains root; release our reference.
+            (frs:release-transform-layer root)
             tree)
         (error (e)
           (log:error :render "build-pane-layer-tree: ~A" e)
@@ -142,7 +144,12 @@ Thread Contract: MUST be called on the main thread."
               ;; records layer paint ops into a DisplayListBuilder.  A real Impeller
               ;; context routes through PaintLayerTreeImpeller which produces empty
               ;; results; null routes through PaintLayerTreeSkia (recording path).
-              ;; The real Impeller context is used later by surface-draw-display-list.
+              ;;
+              ;; IMPORTANT: surface-draw-display-list MUST be called INSIDE the
+              ;; scoped frame.  FlowScopedFrameBuildDisplayListNew returns a DL
+              ;; that references GPU resources (raster textures, render targets)
+              ;; owned by the scoped frame.  Those resources are freed on
+              ;; FlowScopedFrameRelease.  Drawing inside the frame keeps them valid.
               (frs:with-scoped-frame (frame flow-ctx (cffi:null-pointer) (cons phys-w phys-h))
                 (let ((status (frs:scoped-frame-raster frame tree
                                                        :ignore-raster-cache t)))
@@ -150,10 +157,9 @@ Thread Contract: MUST be called on the main thread."
                             status phys-w phys-h)
                   (when (eq status :success)
                     (setf scene-dl (frs:scoped-frame-build-display-list frame))
-                    ;; Draw scene DL to surface INSIDE scoped frame, matching
-                    ;; the working impeller-flow-composition demo pattern.
                     (when (and scene-dl surface)
-                      (frs:surface-draw-display-list surface scene-dl))))))
+                      (let ((draw-ok (frs:surface-draw-display-list surface scene-dl)))
+                        (log:info :render "%composite-via-flow: draw-result=~A" draw-ok))))))
             (log:info :render "%composite-via-flow: scene-dl=~A drawn-to-surface=~A"
                       (not (null scene-dl)) (not (null surface)))
             ;; Retain tree as previous for next frame's damage diffing.
@@ -162,7 +168,7 @@ Thread Contract: MUST be called on the main thread."
             (frs:retain-layer-tree tree)
             (setf (mirror-previous-layer-tree mirror) tree)
             (frs:release-layer-tree tree)
-            scene-dl)
+            scene-dl))
         (error (e)
           (log:error :render "%composite-via-flow: ~A" e)
           (frs:release-layer-tree tree)

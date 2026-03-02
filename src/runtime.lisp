@@ -441,20 +441,15 @@ Thread Contract: MUST be called on main thread."
   (let ((runtime (port-runtime (mirror-port mirror))))
     ;; 1-3. Draw, swap, show — timed together as the first-frame reveal cost.
     (%with-startup-phase runtime :first-frame-reveal
-      ;; 1. Draw content (window hidden — user doesn't see this pass).
+      ;; 1. Content is already drawn to the FBO by %composite-via-flow before
+      ;; this call.  Do NOT call surface-draw-display-list here: scene-dl
+      ;; references GPU resources owned by a now-released scoped frame;
+      ;; re-drawing it outside that frame accesses freed memory and corrupts GL state.
+      ;; Just record dl as current-dl (sentinel for clean-frame skip).
       (if dl
+          (setf (mirror-current-dl mirror) dl)
           (progn
-            (handler-case
-                (let ((surface (get-or-create-mirror-surface mirror)))
-                  (when surface
-                    (rs-internals:without-float-traps
-                      (frs:surface-draw-display-list surface dl))))
-              (error (e)
-                (log:error :render "First-frame: DL draw error: ~A" e)))
-            ;; Retain DL for subsequent frames — do NOT release here.
-            (setf (mirror-current-dl mirror) dl))
-          (progn
-            (log:warn :render "perform-first-frame-reveal: called with no DL, falling back to test pattern")
+            (log:warn :render "perform-first-frame-reveal: no DL, falling back to test pattern")
             (draw-test-pattern-for-mirror mirror)))
       ;; 2. Commit content to framebuffer (window still hidden).
       (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror))

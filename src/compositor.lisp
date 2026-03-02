@@ -169,7 +169,8 @@ Thread Contract: MUST be called on the main thread."
                     (frs:frame-damage-add-additional-damage damage x y w h)))
                 (frs:with-scoped-frame (frame flow-ctx (cffi:null-pointer) (cons phys-w phys-h))
                   (let ((status (frs:scoped-frame-raster frame tree
-                                                         :frame-damage damage)))
+                                                         :frame-damage damage
+                                                         :ignore-raster-cache t)))
                     (log:info :render "%composite-via-flow: raster status=~A phys=~Ax~A damage-rects=~A"
                               status phys-w phys-h (length damage-rects))
                     (when (eq status :success)

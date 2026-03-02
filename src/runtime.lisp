@@ -357,9 +357,13 @@ Thread Contract: MUST be called on main thread."
                (dolist (entry snapshot)
                  (frs:release-display-list (cdr entry)))))
             (cond
-              ;; First-frame reveal: window is still hidden. Run staged sequence.
+              ;; First-frame reveal: window is still hidden.
+              ;; Delay showing until real McCLIM content is available -- no test-pattern flash.
               ((not (mirror-first-frame-drawn-p mirror))
-               (perform-first-frame-reveal mirror new-dl))
+               (if new-dl
+                   (perform-first-frame-reveal mirror new-dl)
+                   ;; No content yet -- stay hidden, skip this frame entirely.
+                   (log:debug :render "render-delegate-draw: pre-reveal, no content yet")))
               ;; New composite DL — already drawn to surface by %composite-via-flow.
               ;; Store for retained redraw, then swap.
               (new-dl
@@ -449,7 +453,9 @@ Thread Contract: MUST be called on main thread."
                 (log:error :render "First-frame: DL draw error: ~A" e)))
             ;; Retain DL for subsequent frames — do NOT release here.
             (setf (mirror-current-dl mirror) dl))
-          (draw-test-pattern-for-mirror mirror))
+          (progn
+            (log:warn :render "perform-first-frame-reveal: called with no DL, falling back to test pattern")
+            (draw-test-pattern-for-mirror mirror)))
       ;; 2. Commit content to framebuffer (window still hidden).
       (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror))
       ;; 3. Show — window appears with content already rendered; no blank flash.

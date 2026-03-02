@@ -114,7 +114,12 @@ The render-delegate-draw first-frame path sets this after perform-first-frame-re
     :documentation "Flow layer tree retained from the previous frame.
 Used by frame-damage to diff against the current tree and limit GPU work.
 Written/read exclusively on the main thread -- no lock needed.
-Released on mirror destroy or when replaced after a new composite."))
+Released on mirror destroy or when replaced after a new composite.")
+   (pending-damage-rects
+    :initform nil
+    :accessor mirror-pending-damage-rects
+    :documentation "List of (x y w h) rects in physical pixels.
+Accumulated on UI thread under dl-lock; consumed (taken) on main thread."))
   (:documentation
    "The canonical McCLIM mirror for an SDL3 window.
 
@@ -255,5 +260,20 @@ Thread Contract: May be called from any thread. Acquires dl-lock."
                (mirror-pane-dl-map mirror))
       (setf (mirror-frame-dirty-p mirror) nil))
     snapshot))
+
+(defun mirror-note-damage-rect (mirror x y w h)
+  "Append a physical-pixel damage rect (X Y W H) to MIRROR's pending list.
+Thread Contract: May be called from any thread. Acquires dl-lock."
+  (bt2:with-lock-held ((mirror-dl-lock mirror))
+    (push (list x y w h) (mirror-pending-damage-rects mirror))))
+
+(defun mirror-take-damage-rects (mirror)
+  "Atomically return (and clear) MIRROR's pending damage rect list.
+Returns the list (or NIL), transferring ownership to the caller.
+Thread Contract: May be called from any thread. Acquires dl-lock."
+  (bt2:with-lock-held ((mirror-dl-lock mirror))
+    (let ((rects (mirror-pending-damage-rects mirror)))
+      (setf (mirror-pending-damage-rects mirror) nil)
+      rects)))
 
 ;;; realize-mirror and destroy-mirror are defined in port.lisp.

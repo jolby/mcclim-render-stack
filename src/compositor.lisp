@@ -108,17 +108,23 @@ Thread Contract: MUST be called on the main thread."
           (log:error :render "build-pane-layer-tree: ~A" e)
           nil)))))
 
-(defun %composite-via-flow (runtime mirror snapshot surface)
+(defun %composite-via-flow (runtime mirror snapshot surface &optional (damage-rects nil))
   "Rasterize SNAPSHOT pane DLs through the Flow compositor into a full-scene DL.
 
 Builds a pane layer tree, acquires a scoped frame from the runtime's Flow
-context, rasterizes the tree, and extracts a full-scene display list.
+context, rasterizes the tree using frame damage for incremental GPU work,
+and extracts a full-scene display list.
 
 SURFACE is the FBO surface to draw to.  The scene DL is drawn to SURFACE
 inside the scoped frame (the DL may reference frame-scoped state).
 
-Retains the layer tree as MIRROR's previous-layer-tree for Phase C damage
-tracking.
+DAMAGE-RECTS is an optional list of (x y w h) physical-pixel rects from
+mirror-take-damage-rects.  Combined with mirror-previous-layer-tree, Flow
+uses these to compute a minimal re-rasterization region and reuse cached
+layers for unchanged subtrees.
+
+Retains the layer tree as MIRROR's previous-layer-tree for next frame's
+damage diffing.
 
 Returns the scene DL (caller must release) on success, or NIL on failure.
 The DL has already been drawn to SURFACE before returning.
@@ -150,25 +156,43 @@ Thread Contract: MUST be called on the main thread."
               ;; that references GPU resources (raster textures, render targets)
               ;; owned by the scoped frame.  Those resources are freed on
               ;; FlowScopedFrameRelease.  Drawing inside the frame keeps them valid.
-              (frs:with-scoped-frame (frame flow-ctx (cffi:null-pointer) (cons phys-w phys-h))
-                (let ((status (frs:scoped-frame-raster frame tree
-                                                       :ignore-raster-cache t)))
-                  (log:info :render "%composite-via-flow: raster status=~A phys=~Ax~A"
-                            status phys-w phys-h)
-                  (when (eq status :success)
-                    (setf scene-dl (frs:scoped-frame-build-display-list frame))
-                    (when (and scene-dl surface)
-                      (let ((draw-ok (frs:surface-draw-display-list surface scene-dl)))
-                        (log:info :render "%composite-via-flow: draw-result=~A" draw-ok))))))
+              (frs:with-frame-damage (damage phys-w phys-h)
+                ;; Wire in previous tree so Flow can diff for incremental rasterization.
+                ;; mirror-previous-layer-tree and mirror-composite-deps are both still
+                ;; alive at this point (released by render-delegate-draw after we return).
+                (let ((prev-tree (mirror-previous-layer-tree mirror)))
+                  (when prev-tree
+                    (frs:frame-damage-set-previous-layer-tree damage prev-tree)))
+                ;; Add physical-pixel damage rects from medium-finish-output.
+                (dolist (rect damage-rects)
+                  (destructuring-bind (x y w h) rect
+                    (frs:frame-damage-add-additional-damage damage x y w h)))
+                (frs:with-scoped-frame (frame flow-ctx (cffi:null-pointer) (cons phys-w phys-h))
+                  (let ((status (frs:scoped-frame-raster frame tree
+                                                         :frame-damage damage)))
+                    (log:info :render "%composite-via-flow: raster status=~A phys=~Ax~A damage-rects=~A"
+                              status phys-w phys-h (length damage-rects))
+                    (when (eq status :success)
+                      ;; Log the minimal clip rect Flow will actually re-rasterize.
+                      (multiple-value-bind (has-damage dx dy dw dh)
+                          (frs:frame-damage-compute-clip-rect damage tree)
+                        (log:debug :render "%composite-via-flow: damage-clip has=~A rect=~A+~A ~Ax~A"
+                                   has-damage dx dy dw dh))
+                      (setf scene-dl (frs:scoped-frame-build-display-list frame))
+                      (when (and scene-dl surface)
+                        (let ((draw-ok (frs:surface-draw-display-list surface scene-dl)))
+                          (log:info :render "%composite-via-flow: draw-result=~A" draw-ok))))))))
             (log:info :render "%composite-via-flow: scene-dl=~A drawn-to-surface=~A"
                       (not (null scene-dl)) (not (null surface)))
             ;; Retain tree as previous for next frame's damage diffing.
+            ;; Release old previous-layer-tree AFTER rasterization is complete --
+            ;; frame-damage-set-previous-layer-tree holds a reference during raster.
             (let ((old (mirror-previous-layer-tree mirror)))
               (when old (frs:release-layer-tree old)))
             (frs:retain-layer-tree tree)
             (setf (mirror-previous-layer-tree mirror) tree)
             (frs:release-layer-tree tree)
-            scene-dl))
+            scene-dl)
         (error (e)
           (log:error :render "%composite-via-flow: ~A" e)
           (frs:release-layer-tree tree)

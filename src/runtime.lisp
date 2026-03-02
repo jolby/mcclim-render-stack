@@ -311,9 +311,18 @@ Thread Contract: MUST be called on main thread."
                   (when (bt2:with-lock-held ((mirror-dl-lock mirror))
                           (mirror-frame-dirty-p mirror))
                     (mirror-snapshot-pane-dls mirror)))
-                 (new-dl
+                 ;; Take accumulated damage rects from UI thread.
+                 (damage-rects (mirror-take-damage-rects mirror)))
+            ;; C4: Skip clean frames -- nothing changed, retained content is correct.
+            (when (and (null snapshot)
+                       (null damage-rects)
+                       (mirror-current-dl mirror))
+              (log:debug :render "render-delegate-draw: clean frame, skipping composite")
+              (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror))
+              (return-from render-delegate-draw nil))
+          (let* ((new-dl
                   (when snapshot
-                    (%composite-via-flow runtime mirror snapshot surface))))
+                    (%composite-via-flow runtime mirror snapshot surface damage-rects))))
             (log:info :render "render-delegate-draw: first=~A dirty=~A snap=~A newdl=~A currdl=~A dims=~Ax~A"
                       (mirror-first-frame-drawn-p mirror)
                       (not (null snapshot))
@@ -371,7 +380,7 @@ Thread Contract: MUST be called on main thread."
                  (if (and deps surface)
                      (%retained-redraw runtime mirror deps surface)
                      (draw-test-pattern-for-mirror mirror)))
-               (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror))))))))))
+               (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror)))))))))))
 
 ;;; ============================================================================
 ;;; Direct Rendering

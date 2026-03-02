@@ -794,14 +794,34 @@ Thread Contract: Called on UI thread."
                 ;; Builder is spent -- release it and clear the slot.
                 (frs:release-display-list-builder builder)
                 (setf (medium-display-list-builder medium) nil)
-                ;; Store DL per-pane; release any previous DL for this sheet.
-                (bt2:with-lock-held ((mirror-dl-lock mirror))
-                  (let ((old-dl (gethash sheet (mirror-pane-dl-map mirror))))
-                    (when old-dl
-                      (frs:release-display-list old-dl)))
-                  (setf (gethash sheet (mirror-pane-dl-map mirror)) dl)
-                  (setf (mirror-frame-dirty-p mirror) t))
-                (log:info :render "Stored pane DL ~A for sheet ~A" dl (type-of sheet)))
+                ;; Compute damage rect in physical pixels before acquiring the lock
+                ;; (%pane-logical-bounds may traverse the McCLIM sheet hierarchy).
+                ;; Use the pane's full region as conservative damage.
+                (let* ((phys-w  (mirror-width  mirror))
+                       (phys-h  (mirror-height mirror))
+                       (log-w   (mirror-logical-width  mirror))
+                       (log-h   (mirror-logical-height mirror))
+                       (scale-x (if (plusp log-w) (float (/ phys-w log-w) 1.0f0) 1.0f0))
+                       (scale-y (if (plusp log-h) (float (/ phys-h log-h) 1.0f0) 1.0f0)))
+                  (multiple-value-bind (lx ly lw lh)
+                      (%pane-logical-bounds sheet)
+                    ;; Store DL per-pane; release any previous DL for this sheet;
+                    ;; note damage rect -- all under the same dl-lock acquisition.
+                    (bt2:with-lock-held ((mirror-dl-lock mirror))
+                      (let ((old-dl (gethash sheet (mirror-pane-dl-map mirror))))
+                        (when old-dl
+                          (frs:release-display-list old-dl)))
+                      (setf (gethash sheet (mirror-pane-dl-map mirror)) dl)
+                      (setf (mirror-frame-dirty-p mirror) t)
+                      (when (and lx (plusp lw) (plusp lh))
+                        (let ((px (floor (* lx scale-x)))
+                              (py (floor (* ly scale-y)))
+                              (pw (ceiling (* lw scale-x)))
+                              (ph (ceiling (* lh scale-y))))
+                          (push (list px py pw ph) (mirror-pending-damage-rects mirror))
+                          (log:debug :render "Noted damage rect px=~A py=~A pw=~A ph=~A sheet=~A"
+                                     px py pw ph (type-of sheet)))))
+                    (log:info :render "Stored pane DL ~A for sheet ~A" dl (type-of sheet)))))
             (error (e)
               (log:error :render "medium-finish-output error: ~A" e)
               ;; Avoid leaking the builder on error.

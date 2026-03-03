@@ -159,7 +159,7 @@
 
 (defun run ()
   "Run the drawing demo using the sdl3/impeller backend."
-  ;; (setf clim:*default-server-path* '(:render-stack))
+  (setf clim:*default-server-path* '(:render-stack))
   (run-frame-top-level
    (make-application-frame 'drawing-demo
                            :width 1280

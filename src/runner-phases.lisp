@@ -137,6 +137,11 @@ Arguments:
    (last-render-time :accessor clim-render-phase-last-render-time
                      :initform 0
                      :documentation "Internal-real-time of last fallback render, for throttling.")
+   (render-count :accessor clim-render-phase-render-count
+                 :initform 0
+                 :documentation "Monotonically increasing render counter.
+Used as *current-frame-number* on the fallback path (when the pipeline is
+empty and no protocol frame-number is available).")
    (chronicle :accessor clim-render-phase-chronicle
               :initform nil
               :documentation "Frame-chronicle store for per-frame profiling.
@@ -163,12 +168,14 @@ No time budget -- we always render the frame we have."))
       (let ((t0 (get-internal-real-time)))
         (cond
           ;; Normal pipeline path: frame was produced by render-engine-tick on the UI thread.
+          ;; Bind *current-frame-number* to the protocol frame number for this path.
           (got-it
-           (log:debug :diag "clim-render-phase: consumed frame from pipeline")
-           (handler-case
-               (render-delegate-draw runtime item)
-             (error (e)
-               (log:error :render "Error in delegate-draw: ~A" e))))
+           (let ((rs-internals:*current-frame-number* (getf item :frame-number)))
+             (log:debug :diag "clim-render-phase: consumed frame from pipeline")
+             (handler-case
+                 (render-delegate-draw runtime item)
+               (error (e)
+                 (log:error :render "Error in delegate-draw: ~A" e)))))
 
           ;; Fallback: direct render when pipeline is empty, throttled to ~30fps.
           ;; McCLIM's event loop may not call process-next-event in all paths
@@ -176,6 +183,8 @@ No time budget -- we always render the frame we have."))
           ;; so render-engine-tick may never be driven from the UI side.
           ;; This fallback renders directly without the pipeline so we can confirm
           ;; the Impeller path works end-to-end.
+          ;; Bind *current-frame-number* to a monotonic render counter so all
+          ;; log messages from this path carry a stable frame identifier.
           (t
            (let ((impeller-ctx  (runtime-impeller-context runtime))
                  (registry-size (bt2:with-lock-held ((port-registry-lock port))
@@ -186,10 +195,12 @@ No time budget -- we always render the frame we have."))
                         (> (- now (clim-render-phase-last-render-time phase))
                            min-interval))
                (setf (clim-render-phase-last-render-time phase) now)
-               (handler-case
-                   (render-delegate-draw runtime nil)
-                 (error (e)
-                   (log:error :render "clim-render-phase: direct render failed: ~A" e)))))))
+               (let ((rs-internals:*current-frame-number*
+                       (incf (clim-render-phase-render-count phase))))
+                 (handler-case
+                     (render-delegate-draw runtime nil)
+                   (error (e)
+                     (log:error :render "clim-render-phase: direct render failed: ~A" e))))))))
         (fc:record :render-ms
                    (round (* 1000 (- (get-internal-real-time) t0))
                           internal-time-units-per-second))))))

@@ -261,8 +261,10 @@ Phase 2: Will inspect the port's dirty-sheet state.
 
 Thread Contract: MUST be called on UI thread."
   (rs-internals:assert-ui-thread render-delegate-begin-frame)
-  ;; Phase 1: always produce a frame.
-  t)
+  (let ((rs-internals:*current-frame-number* frame-number))
+    (declare (ignore target-time))
+    ;; Phase 1: always produce a frame.
+    t))
 
 (defmethod render-stack:render-delegate-end-frame
     ((runtime render-stack-runtime) layer-tree frame-timings)
@@ -290,7 +292,6 @@ it to the mirror FBO surface.  Falls back to the retained current-dl or
 test pattern when nothing is dirty.
 
 Thread Contract: MUST be called on main thread."
-  (declare (ignore pipeline-item))
   (rs-internals:assert-main-thread render-delegate-draw)
   (let ((port (runtime-port runtime)))
     (unless port

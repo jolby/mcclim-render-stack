@@ -777,7 +777,7 @@ render-delegate-draw knows to composite a new frame.
 Thread Contract: Called on UI thread."
   (let* ((sheet  (medium-sheet medium))
          (mirror (when sheet (climi::sheet-mirror sheet))))
-    (log:trace :render "medium-finish-output: sheet=~A mirror-type=~A"
+    (log:debug :render "medium-finish-output: sheet=~A mirror-type=~A"
                (type-of sheet) (type-of mirror))
     (when (typep mirror 'render-stack-mirror)
       (let ((builder (medium-display-list-builder medium)))
@@ -805,6 +805,20 @@ Thread Contract: Called on UI thread."
                        (scale-y (if (plusp log-h) (float (/ phys-h log-h) 1.0f0) 1.0f0)))
                   (multiple-value-bind (lx ly lw lh)
                       (%pane-logical-bounds sheet)
+                    ;; Q2 DIAGNOSTIC: compare where the DL was recorded vs where
+                    ;; the clip-rect will be placed.  The device-transformation's
+                    ;; (0,0) maps to (tx,ty) in window-absolute coords -- that must
+                    ;; match (lx,ly) from %pane-logical-bounds for content to show.
+                    (multiple-value-bind (tx ty)
+                        (transform-position (climi::medium-device-transformation medium) 0 0)
+                      (log:info :render "medium-finish-output: dl-origin=(~,1f,~,1f) clip-origin=(~A,~A) sheet=~A"
+                                (float tx 1.0f0) (float ty 1.0f0) lx ly (type-of sheet))
+                      (when (and lx (or (> (abs (- tx (float lx 1.0f0))) 1.0f0)
+                                        (> (abs (- ty (float ly 1.0f0))) 1.0f0)))
+                        (log:warn :render "COORD MISMATCH sheet=~A dl-origin=(~,1f,~,1f) clip-origin=(~,1f,~,1f)"
+                                  (type-of sheet)
+                                  (float tx 1.0f0) (float ty 1.0f0)
+                                  (float lx 1.0f0) (float ly 1.0f0))))
                     ;; Store DL per-pane; release any previous DL for this sheet;
                     ;; note damage rect -- all under the same dl-lock acquisition.
                     (bt2:with-lock-held ((mirror-dl-lock mirror))

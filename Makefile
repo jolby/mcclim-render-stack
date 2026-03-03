@@ -11,7 +11,7 @@ SBCL_FLAGS := --dynamic-space-size 8096 --noinform --disable-debugger --non-inte
 ASDF_BOOT := --eval '(require :asdf)' --eval "(pushnew \#p\"$(CWD)/\" asdf:*central-registry*)"
 QL_BOOT := --eval '(load "$(QL)")'
 
-.PHONY: all load test test-unit test-integration test-ink test-line-style test-event clean check-quicklisp demo demo-simple-frame demo-drawing
+.PHONY: all load test test-unit test-integration test-ink test-line-style test-event clean check-quicklisp demo demo-simple-frame demo-drawing demo-min-button
 
 all: load
 
@@ -48,6 +48,12 @@ demo-simple-frame: check-quicklisp
 	  --eval '(ql:quickload :mcclim-render-stack :force t :silent t)' \
 	  --eval '(load "$(CWD)/examples/simple-frame.lisp")' \
 	  --eval '(rs-simple-frame:run)'
+
+demo-min-button: check-quicklisp
+	$(SBCL) $(SBCL_FLAGS) $(QL_BOOT) $(ASDF_BOOT) \
+	  --eval '(ql:quickload :mcclim-render-stack :force t :silent t)' \
+	  --eval '(load "$(CWD)/examples/min-button.lisp")' \
+	  --eval '(rs-min-button:run)'
 
 demo-drawing: check-quicklisp
 	$(SBCL) $(SBCL_FLAGS) $(QL_BOOT) $(ASDF_BOOT) \

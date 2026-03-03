@@ -53,6 +53,8 @@ Thread Contract: MUST be called on the main thread."
   (rs-internals:assert-main-thread build-pane-layer-tree)
   (when (null snapshot)
     (return-from build-pane-layer-tree nil))
+  (log:info :render "build-pane-layer-tree: snapshot panes ~A"
+            (mapcar (lambda (e) (type-of (car e))) snapshot))
   (let* ((phys-w (mirror-width  mirror))
          (phys-h (mirror-height mirror))
          (log-w  (mirror-logical-width  mirror))

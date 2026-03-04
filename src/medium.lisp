@@ -764,20 +764,27 @@ Thread Contract: Called on UI thread."
        ;; Nested call or no change in buffering state.
        (funcall continuation)))))
 
-(defmethod climi::invoke-with-output-buffered
-    ((sheet climi::sheet-with-medium-mixin) continuation &optional (buffered-p t))
-  "Trampoline: delegate to the sheet's medium so non-stream panes (gadgets,
-layout containers) go through the same DL lifecycle as stream panes.
+(defmethod clim:handle-repaint :after ((sheet climi::sheet-with-medium-mixin) region)
+  "Finalize the DL for non-stream panes (gadgets, layout containers) after repaint.
 
-repaint-sheet calls (with-output-buffered (sheet) ...) which dispatches here.
-Without this method the default no-op fires and medium-finish-output is never
-called for gadgets, so their DLs are never stored in pane-dl-map.
+For stream panes, invoke-with-output-buffered already calls medium-finish-output.
+For non-stream panes (push-button-pane, hrack-pane, etc.), repaint-sheet wraps
+handle-repaint in with-output-buffered(sheet) but the default sheet method is a
+no-op. This :after method runs inside handle-repaint :around's with-sheet-medium
+binding (so the medium is live) and ensures the DL is finalized.
+
+If medium-finish-output was already called (stream pane via invoke-with-output-buffered),
+the builder is nil and this is a no-op.
 
 Thread Contract: Called on UI thread."
+  (declare (ignore region))
   (let ((medium (clim:sheet-medium sheet)))
-    (if (typep medium 'render-stack-medium)
-        (climi::invoke-with-output-buffered medium continuation buffered-p)
-        (funcall continuation))))
+    (log:info :render "handle-repaint :after sheet=~A medium-type=~A builder=~A"
+              (type-of sheet) (type-of medium)
+              (when (typep medium 'render-stack-medium)
+                (not (null (medium-display-list-builder medium)))))
+    (when (typep medium 'render-stack-medium)
+      (medium-finish-output medium))))
 
 (defmethod medium-finish-output ((medium render-stack-medium))
   "Finalize this pane's display list and store it in the mirror's pane-dl-map.
@@ -792,11 +799,11 @@ new single-element list. These panes always do a complete self-paint.
 Thread Contract: Called on UI thread."
   (let* ((sheet  (medium-sheet medium))
          (mirror (when sheet (climi::sheet-mirror sheet))))
-    (log:debug :render "medium-finish-output: sheet=~A mirror-type=~A"
-               (type-of sheet) (type-of mirror))
+    (log:info :render "medium-finish-output: sheet=~A mirror=~A builder=~A"
+              (type-of sheet) (type-of mirror)
+              (not (null (medium-display-list-builder medium))))
     (when (typep mirror 'render-stack-mirror)
       (let ((builder (medium-display-list-builder medium)))
-        (log:debug :render "medium-finish-output: builder=~A" builder)
         (when builder
           (handler-case
               (let ((dl (frs:create-display-list builder)))

@@ -188,7 +188,7 @@
 
 (defun run (&key (width 600) (height 450))
   "Run the simple frame test application using the SDL3+Impeller backend."
-  (setf clim:*default-server-path* '(:render-stack))
+  ;; (setf clim:*default-server-path* '(:render-stack))
   ;; (setf clim:*default-server-path* '(:clx-ttf))
   (format t "~& Running Simple Frame using default-server-path: ~A~%" clim:*default-server-path*)
   (clim:run-frame-top-level (make-application-frame 'simple-frame

@@ -27,6 +27,15 @@
                                )))
   :in-order-to ((asdf:test-op (asdf:test-op "mcclim-render-stack/tests"))))
 
+(asdf:defsystem :mcclim-render-stack/test-rig
+  :description "REPL-driven graphical test rig: pixel snapshot, frame-step, event injection"
+  :depends-on (:mcclim-render-stack :cffi :verbose)
+  :components ((:module "test-rig"
+                  :components ((:file "package")
+                               (:file "ppm"     :depends-on ("package"))
+                               (:file "harness" :depends-on ("package" "ppm"))
+                               (:file "events"  :depends-on ("package"))))))
+
 (asdf:defsystem :mcclim-render-stack/tests
   :depends-on (:mcclim-render-stack
                :parachute

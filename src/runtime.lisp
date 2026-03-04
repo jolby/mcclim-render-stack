@@ -31,6 +31,36 @@ In an interactive REPL (no --disable-debugger): a violated invariant calls
 BREAK and freezes the frame in the debugger so all state can be inspected.
 In batch mode (--disable-debugger): prints to stderr and continues.")
 
+(defvar *snapshot-path* nil
+  "When non-nil, capture the next frame's framebuffer to this path (PPM format).
+Cleared after each capture.  Set from REPL: (setf *snapshot-path* \"/tmp/f.ppm\")
+Actual capture requires mcclim-render-stack/test-rig to be loaded.")
+
+(defvar *snapshot-every-n-frames* nil
+  "When non-nil integer N, automatically capture a PPM every N frames.
+Output paths are /tmp/frame-NNNNNN.ppm.
+Actual capture requires mcclim-render-stack/test-rig to be loaded.")
+
+(defvar *frame-capture-hook* nil
+  "When non-nil, called after each frame draw and before GL swap:
+  (funcall *frame-capture-hook* mirror)
+Installed by mcclim-render-stack/test-rig when that system is loaded.
+Main-thread contract: called from render-delegate-draw on the main thread.")
+
+(defvar *frame-step-mode* nil
+  "When T, render-delegate-draw pauses after all mirrors are swapped each frame,
+waiting for *frame-advance-semaphore* to be signaled by the test harness.
+Enable via rs-test-rig:start-frame-step; disable via rs-test-rig:stop-frame-step.")
+
+(defvar *frame-done-semaphore* nil
+  "Semaphore signaled by the main thread after each complete frame swap.
+Created by rs-test-rig:start-frame-step; destroyed by stop-frame-step.")
+
+(defvar *frame-advance-semaphore* nil
+  "Semaphore waited on by the main thread between frames in frame-step mode.
+The test harness signals this once per desired frame advance.
+Created by rs-test-rig:start-frame-step; destroyed by stop-frame-step.")
+
 (defmacro check-render-invariant (test message &rest args)
   "Assert TEST is true at a render-pipeline checkpoint.
 
@@ -346,6 +376,8 @@ Thread Contract: MUST be called on main thread."
                        (frs:surface-draw-display-list surface new-dl)))
                  (error (e)
                    (log:error :render "Error drawing composite DL: ~A" e))))
+             (when *frame-capture-hook*
+               (funcall *frame-capture-hook* mirror))
              (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror)))
             ;; Not dirty - redraw retained DL if available, else test pattern.
             (t
@@ -359,7 +391,16 @@ Thread Contract: MUST be called on main thread."
                      (error (e)
                        (log:error :render "Error redrawing retained DL: ~A" e)))
                    (draw-test-pattern-for-mirror mirror)))
-             (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror)))))))))
+             (when *frame-capture-hook*
+               (funcall *frame-capture-hook* mirror))
+             (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror))))))
+    ;; Frame-step: pause once per render-delegate-draw invocation after all
+    ;; mirrors are drawn and swapped.  Outside the per-mirror dolist so N
+    ;; mirrors = 1 pause, not N.  While paused the runner loop is blocked
+    ;; so the fallback 30fps path cannot fire -- full frame control.
+    (when (and *frame-step-mode* *frame-done-semaphore* *frame-advance-semaphore*)
+      (bt2:signal-semaphore *frame-done-semaphore*)
+      (bt2:wait-on-semaphore *frame-advance-semaphore*)))))
 
 ;;; ============================================================================
 ;;; Direct Rendering

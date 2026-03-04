@@ -79,21 +79,22 @@ Thread Contract: MUST be called on the main thread."
             ;; Add one DL subtree per pane.
             (let ((pane-count 0))
               (dolist (entry sorted)
-                (let ((sheet (car entry))
-                      (dl    (cdr entry)))
+                (let ((sheet   (car entry))
+                      (dl-list (cdr entry)))   ; oldest-first list
                   (multiple-value-bind (lx ly lw lh)
                       (%pane-logical-bounds sheet)
-                    (log:info :render "build-pane-layer-tree: pane ~A bounds lx=~A ly=~A lw=~A lh=~A dl=~A"
-                              (type-of sheet) lx ly lw lh (not (null dl)))
-                    (when (and lx (plusp lw) (plusp lh))
+                    (log:info :render "build-pane-layer-tree: pane ~A bounds lx=~A ly=~A lw=~A lh=~A dl-count=~A"
+                              (type-of sheet) lx ly lw lh (length dl-list))
+                    (when (and lx (plusp lw) (plusp lh) dl-list)
                       (handler-case
-                          (let* ((clip (frs:make-clip-rect-layer lx ly lw lh))
-                                 (leaf (frs:make-display-list-layer dl)))
-                            ;; leaf -> clip -> root.  Use root (FlowTransformLayer)
-                            ;; directly for add-child, not the container-interface alias.
-                            (frs:clip-rect-layer-add-child
-                             clip (frs:display-list-layer-as-container leaf))
-                            (frs:release-display-list-layer leaf)
+                          (let ((clip (frs:make-clip-rect-layer lx ly lw lh)))
+                            ;; Add one DL layer per DL in oldest-first order.
+                            ;; Earlier DLs are behind; later DLs (partial updates) on top.
+                            (dolist (dl dl-list)
+                              (let ((leaf (frs:make-display-list-layer dl)))
+                                (frs:clip-rect-layer-add-child
+                                 clip (frs:display-list-layer-as-container leaf))
+                                (frs:release-display-list-layer leaf)))
                             (frs:transform-layer-add-child
                              root (frs:clip-rect-layer-as-container clip))
                             (frs:release-clip-rect-layer clip)

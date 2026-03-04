@@ -360,10 +360,11 @@ Thread Contract: Called on UI thread. Impeller/SDL3 cleanup on main thread."
             (when (mirror-pending-dl mirror)
               (frs:release-display-list (mirror-pending-dl mirror))
               (setf (mirror-pending-dl mirror) nil))
-            ;; Release all per-pane DLs.
-            (maphash (lambda (sheet dl)
+            ;; Release all per-pane DL lists.
+            (maphash (lambda (sheet dl-list)
                        (declare (ignore sheet))
-                       (frs:release-display-list dl))
+                       (dolist (dl dl-list)
+                         (frs:release-display-list dl)))
                      (mirror-pane-dl-map mirror))
             (clrhash (mirror-pane-dl-map mirror))))
         :blocking t

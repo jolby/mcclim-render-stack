@@ -767,12 +767,12 @@ Thread Contract: Called on UI thread."
 (defmethod medium-finish-output ((medium render-stack-medium))
   "Finalize this pane's display list and store it in the mirror's pane-dl-map.
 
-Called by McCLIM after drawing ops complete (via invoke-with-output-buffered's
-unwind-protect, or stream-finish-output).
+For stream panes (output-recording-stream subclasses): push the new DL onto
+the per-pane DL list. The list accumulates partial and full repaints in order.
+window-erase-viewport :after clears the list when a full repaint cycle begins.
 
-Each pane medium finalizes its own builder into a DL and stores it in the
-mirror's pane-dl-map keyed by the medium's sheet.  Sets frame-dirty-p so
-render-delegate-draw knows to composite a new frame.
+For non-stream panes (gadgets, layout decorators): replace the list with a
+new single-element list. These panes always do a complete self-paint.
 
 Thread Contract: Called on UI thread."
   (let* ((sheet  (medium-sheet medium))
@@ -785,18 +785,13 @@ Thread Contract: Called on UI thread."
         (when builder
           (handler-case
               (let ((dl (frs:create-display-list builder)))
-                ;; Invariant: create-display-list must return a valid DL object.
-                ;; If this fires the Impeller builder itself failed -- likely a
-                ;; corrupt draw call earlier in this pane's frame.
                 (check-render-invariant dl
-                  "create-display-list returned nil; sheet=~A builder=~A"
-                  (type-of sheet) builder)
+                                        "create-display-list returned nil; sheet=~A builder=~A"
+                                        (type-of sheet) builder)
                 ;; Builder is spent -- release it and clear the slot.
                 (frs:release-display-list-builder builder)
                 (setf (medium-display-list-builder medium) nil)
-                ;; Compute damage rect in physical pixels before acquiring the lock
-                ;; (%pane-logical-bounds may traverse the McCLIM sheet hierarchy).
-                ;; Use the pane's full region as conservative damage.
+                ;; Compute damage rect in physical pixels before acquiring the lock.
                 (let* ((phys-w  (mirror-width  mirror))
                        (phys-h  (mirror-height mirror))
                        (log-w   (mirror-logical-width  mirror))
@@ -805,10 +800,7 @@ Thread Contract: Called on UI thread."
                        (scale-y (if (plusp log-h) (float (/ phys-h log-h) 1.0f0) 1.0f0)))
                   (multiple-value-bind (lx ly lw lh)
                       (%pane-logical-bounds sheet)
-                    ;; Q2 DIAGNOSTIC: compare where the DL was recorded vs where
-                    ;; the clip-rect will be placed.  The device-transformation's
-                    ;; (0,0) maps to (tx,ty) in window-absolute coords -- that must
-                    ;; match (lx,ly) from %pane-logical-bounds for content to show.
+                    ;; Coordinate mismatch diagnostic (keep for now).
                     (multiple-value-bind (tx ty)
                         (transform-position (climi::medium-device-transformation medium) 0 0)
                       (log:info :render "medium-finish-output: dl-origin=(~,1f,~,1f) clip-origin=(~A,~A) sheet=~A"
@@ -819,13 +811,20 @@ Thread Contract: Called on UI thread."
                                   (type-of sheet)
                                   (float tx 1.0f0) (float ty 1.0f0)
                                   (float lx 1.0f0) (float ly 1.0f0))))
-                    ;; Store DL per-pane; release any previous DL for this sheet;
-                    ;; note damage rect -- all under the same dl-lock acquisition.
                     (bt2:with-lock-held ((mirror-dl-lock mirror))
-                      (let ((old-dl (gethash sheet (mirror-pane-dl-map mirror))))
-                        (when old-dl
-                          (frs:release-display-list old-dl)))
-                      (setf (gethash sheet (mirror-pane-dl-map mirror)) dl)
+                      (let ((current-list (gethash sheet (mirror-pane-dl-map mirror))))
+                        (if (typep sheet 'clim:output-recording-stream)
+                            ;; Stream pane: accumulate (partial updates layer on top).
+                            ;; List is newest-first; compositor reverses for render order.
+                            (setf (gethash sheet (mirror-pane-dl-map mirror))
+                                  (cons dl current-list))
+                            ;; Non-stream pane (gadget/layout): replace.
+                            ;; Each repaint is a complete self-paint; old DLs are stale.
+                            (progn
+                              (dolist (old current-list)
+                                (frs:release-display-list old))
+                              (setf (gethash sheet (mirror-pane-dl-map mirror))
+                                    (list dl)))))
                       (setf (mirror-frame-dirty-p mirror) t)
                       (when (and lx (plusp lw) (plusp lh))
                         (let ((px (floor (* lx scale-x)))
@@ -835,12 +834,33 @@ Thread Contract: Called on UI thread."
                           (push (list px py pw ph) (mirror-pending-damage-rects mirror))
                           (log:debug :render "Noted damage rect px=~A py=~A pw=~A ph=~A sheet=~A"
                                      px py pw ph (type-of sheet)))))
-                    (log:info :render "Stored pane DL ~A for sheet ~A" dl (type-of sheet)))))
+                    (log:info :render "Stored pane DL ~A for sheet ~A (list-length=~A)"
+                              dl (type-of sheet)
+                              (length (gethash sheet (mirror-pane-dl-map mirror)))))))
             (error (e)
               (log:error :render "medium-finish-output error: ~A" e)
-              ;; Avoid leaking the builder on error.
               (frs:release-display-list-builder builder)
               (setf (medium-display-list-builder medium) nil))))))))
+
+(defmethod clim:window-erase-viewport :after ((pane clim-stream-pane))
+  "When a stream pane's viewport is erased (full repaint starting), clear
+the accumulated DL list so old partial DLs don't render under fresh content.
+
+Called by window-clear before do-redisplay-pane runs the display function.
+window-clear -> window-erase-viewport -> [this] clears the list.
+Subsequent medium-finish-output calls then build the list fresh.
+
+Thread Contract: Called on UI thread."
+  (let ((mirror (climi::sheet-mirror pane)))
+    (when (typep mirror 'render-stack-mirror)
+      (bt2:with-lock-held ((mirror-dl-lock mirror))
+        (let ((old-list (gethash pane (mirror-pane-dl-map mirror))))
+          (when old-list
+            (dolist (dl old-list)
+              (frs:release-display-list dl))
+            (remhash pane (mirror-pane-dl-map mirror))
+            (setf (mirror-frame-dirty-p mirror) t)))))))
+
 
 (defmethod medium-force-output ((medium render-stack-medium))
   "Force any pending output to the display — no-op for render-stack.

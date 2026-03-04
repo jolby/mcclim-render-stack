@@ -64,9 +64,11 @@ Created by get-or-create-mirror-surface, invalidated on resize, released on dest
    (pane-dl-map
     :initform (make-hash-table :test 'eq)
     :accessor mirror-pane-dl-map
-    :documentation "Hash table mapping McCLIM sheet -> retained Impeller display-list.
-Protected by dl-lock. Each entry is the most recent DL produced by that pane's medium.
-Entries are replaced (old DL released) each time a pane redraws.
+    :documentation "Hash table mapping McCLIM sheet -> list of retained Impeller display-lists.
+Protected by dl-lock. The list is newest-first (head = most recent DL).
+For stream panes: DLs accumulate (partial + full repaints layer in order).
+For non-stream panes: list always has exactly one element (complete repaint replaces).
+List is cleared by window-erase-viewport :after for stream panes.
 Released on destroy-mirror.")
    (frame-dirty-p
     :initform nil
@@ -245,18 +247,22 @@ Thread Contract: May be called from any thread. Acquires dl-lock."
       (frs:release-display-list old-dl))))
 
 (defun mirror-snapshot-pane-dls (mirror)
-  "Return a snapshot alist ((sheet . dl) ...) with each DL retained.
-Under dl-lock, shallow-copies the pane-dl-map and retains each DL so the
-snapshot is safe to use after the lock is released.  Clears frame-dirty-p.
+  "Return a snapshot alist ((sheet . dl-list) ...) with each DL retained.
+DL-LIST is oldest-first (ready for compositor to render bottom-to-top).
+Under dl-lock, shallow-copies the pane-dl-map and retains each DL.
+Clears frame-dirty-p.
 
-Caller MUST release each DL in the snapshot after use (e.g. with frs:release-display-list).
+Caller MUST release each DL in each dl-list after use.
 
 Thread Contract: May be called from any thread. Acquires dl-lock."
   (let (snapshot)
     (bt2:with-lock-held ((mirror-dl-lock mirror))
-      (maphash (lambda (sheet dl)
-                 (frs:retain-display-list dl)
-                 (push (cons sheet dl) snapshot))
+      (maphash (lambda (sheet dl-list)
+                 ;; dl-list is newest-first in the map; reverse to oldest-first for rendering.
+                 (let ((oldest-first (reverse dl-list)))
+                   (dolist (dl oldest-first)
+                     (frs:retain-display-list dl))
+                   (push (cons sheet oldest-first) snapshot)))
                (mirror-pane-dl-map mirror))
       (setf (mirror-frame-dirty-p mirror) nil))
     snapshot))

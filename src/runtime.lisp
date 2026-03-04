@@ -356,7 +356,8 @@ Thread Contract: MUST be called on main thread."
               (snapshot
                ;; Composite failed: release snapshot now; old deps stay live.
                (dolist (entry snapshot)
-                 (frs:release-display-list (cdr entry)))))
+                 (dolist (dl (cdr entry))
+                   (frs:release-display-list dl)))))
             (cond
               ;; First-frame reveal: window is still hidden.
               ;; Delay showing until real McCLIM content is available -- no test-pattern flash.
@@ -396,7 +397,8 @@ Thread Contract: MUST be called on main thread."
 These are the sub-DLs referenced by mirror-current-dl's composite.
 Thread Contract: MUST be called on main thread."
   (dolist (entry (mirror-composite-deps mirror))
-    (frs:release-display-list (cdr entry)))
+    (dolist (dl (cdr entry))
+      (frs:release-display-list dl)))
   (setf (mirror-composite-deps mirror) nil))
 
 (defun collect-registered-mirrors (port)

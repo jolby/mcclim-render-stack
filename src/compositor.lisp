@@ -68,6 +68,8 @@ Thread Contract: MUST be called on the main thread."
            ;; Sort panes shallowest-first (parent panes behind child panes).
            (sorted  (sort (copy-list snapshot) #'<
                           :key (lambda (e) (%sheet-depth (car e))))))
+      (log:info :render "build-pane-layer-tree: sort order ~A"
+                (mapcar (lambda (e) (list (type-of (car e)) (%sheet-depth (car e)))) sorted))
       (handler-case
           (let* ((tree  (frs:make-layer-tree phys-w phys-h))
                  ;; Root scale layer: logical coords -> physical pixels.

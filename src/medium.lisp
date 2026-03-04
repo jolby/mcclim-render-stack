@@ -764,6 +764,21 @@ Thread Contract: Called on UI thread."
        ;; Nested call or no change in buffering state.
        (funcall continuation)))))
 
+(defmethod climi::invoke-with-output-buffered
+    ((sheet climi::sheet-with-medium-mixin) continuation &optional (buffered-p t))
+  "Trampoline: delegate to the sheet's medium so non-stream panes (gadgets,
+layout containers) go through the same DL lifecycle as stream panes.
+
+repaint-sheet calls (with-output-buffered (sheet) ...) which dispatches here.
+Without this method the default no-op fires and medium-finish-output is never
+called for gadgets, so their DLs are never stored in pane-dl-map.
+
+Thread Contract: Called on UI thread."
+  (let ((medium (clim:sheet-medium sheet)))
+    (if (typep medium 'render-stack-medium)
+        (climi::invoke-with-output-buffered medium continuation buffered-p)
+        (funcall continuation))))
+
 (defmethod medium-finish-output ((medium render-stack-medium))
   "Finalize this pane's display list and store it in the mirror's pane-dl-map.
 
@@ -851,11 +866,14 @@ window-clear -> window-erase-viewport -> [this] clears the list.
 Subsequent medium-finish-output calls then build the list fresh.
 
 Thread Contract: Called on UI thread."
+  (log:info :render "window-erase-viewport :after pane=~A" (type-of pane))
   (let ((mirror (climi::sheet-mirror pane)))
     (when (typep mirror 'render-stack-mirror)
       (bt2:with-lock-held ((mirror-dl-lock mirror))
         (let ((old-list (gethash pane (mirror-pane-dl-map mirror))))
           (when old-list
+            (log:info :render "window-erase-viewport: clearing ~A DLs for ~A"
+                      (length old-list) (type-of pane))
             (dolist (dl old-list)
               (frs:release-display-list dl))
             (remhash pane (mirror-pane-dl-map mirror))

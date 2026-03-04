@@ -353,7 +353,8 @@ Thread Contract: Called on UI thread. Impeller/SDL3 cleanup on main thread."
           ;; Release composite dependency DLs (sub-DLs referenced by composite).
           (when (mirror-composite-deps mirror)
             (dolist (entry (mirror-composite-deps mirror))
-              (frs:release-display-list (cdr entry)))
+              (dolist (dl (cdr entry))
+                (frs:release-display-list dl)))
             (setf (mirror-composite-deps mirror) nil))
           ;; Release any pending DL that was never consumed.
           (bt2:with-lock-held ((mirror-dl-lock mirror))

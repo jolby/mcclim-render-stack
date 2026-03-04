@@ -94,3 +94,18 @@ if the frame times out."
   (setf *snapshot-path* path)
   (%advance-one-frame timeout)
   path)
+
+(defun capture-frame (&key (frames 15) (output "/tmp/rs-snapshot.ppm") (timeout 30))
+  "Batch-friendly capture: start frame-step if not already active, advance
+FRAMES frames with a snapshot on the last, then stop frame-step if we started it.
+Returns OUTPUT path string.  TIMEOUT is per-frame wait in seconds (default 30
+to allow for cold-start window reveal).
+
+Intended for use via the eval server and Claude Code skills, where the caller
+does not want to manage start/stop-frame-step manually."
+  (let ((we-started (not mcclim-render-stack:*frame-step-mode*)))
+    (when we-started (start-frame-step))
+    (unwind-protect
+         (advance-frames frames :snapshot-path output :timeout timeout)
+      (when we-started (stop-frame-step))))
+  output)

@@ -23,11 +23,17 @@
    #:stop-frame-step
    #:advance-frames
    #:snapshot-frame
+   ;; Batch-friendly capture (start+advance+stop in one call)
+   #:capture-frame
    ;; Event injection
    #:get-window-ids
    #:inject-mouse-move
    #:inject-mouse-down
    #:inject-mouse-up
-   #:inject-click))
+   #:inject-click
+   ;; Eval server (for Claude Code skill integration)
+   #:start-repl-server
+   #:stop-repl-server
+   #:*repl-server-dir*))
 
 (in-package :mcclim-render-stack/test-rig)

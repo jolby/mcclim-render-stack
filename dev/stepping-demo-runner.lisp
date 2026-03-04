@@ -24,6 +24,13 @@
          (lambda () (rs-simple-frame:run)) :name "demo")
         (log:repl-level)
         *demo-log-level*))
+
+(defun start-agent-mode ()
+  "Start the demo + eval server so Claude Code skills can drive it.
+After calling this, Claude Code skills (render-snapshot, render-step,
+render-feedback) can communicate via scripts/rs-eval.sh."
+  (run-demo)
+  (rs-test-rig:start-repl-server))
   
 
 ;; Example frame stepping session

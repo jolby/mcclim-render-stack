@@ -34,7 +34,8 @@
                   :components ((:file "package")
                                (:file "ppm"     :depends-on ("package"))
                                (:file "harness" :depends-on ("package" "ppm"))
-                               (:file "events"  :depends-on ("package"))))))
+                               (:file "events"  :depends-on ("package"))
+                               (:file "server"  :depends-on ("package" "harness"))))))
 
 (asdf:defsystem :mcclim-render-stack/tests
   :depends-on (:mcclim-render-stack

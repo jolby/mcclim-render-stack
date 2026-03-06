@@ -31,6 +31,36 @@ In an interactive REPL (no --disable-debugger): a violated invariant calls
 BREAK and freezes the frame in the debugger so all state can be inspected.
 In batch mode (--disable-debugger): prints to stderr and continues.")
 
+(defvar *snapshot-path* nil
+  "When non-nil, capture the next frame's framebuffer to this path (PPM format).
+Cleared after each capture.  Set from REPL: (setf *snapshot-path* \"/tmp/f.ppm\")
+Actual capture requires mcclim-render-stack/test-rig to be loaded.")
+
+(defvar *snapshot-every-n-frames* nil
+  "When non-nil integer N, automatically capture a PPM every N frames.
+Output paths are /tmp/frame-NNNNNN.ppm.
+Actual capture requires mcclim-render-stack/test-rig to be loaded.")
+
+(defvar *frame-capture-hook* nil
+  "When non-nil, called after each frame draw and before GL swap:
+  (funcall *frame-capture-hook* mirror)
+Installed by mcclim-render-stack/test-rig when that system is loaded.
+Main-thread contract: called from render-delegate-draw on the main thread.")
+
+(defvar *frame-step-mode* nil
+  "When T, render-delegate-draw pauses after all mirrors are swapped each frame,
+waiting for *frame-advance-semaphore* to be signaled by the test harness.
+Enable via rs-test-rig:start-frame-step; disable via rs-test-rig:stop-frame-step.")
+
+(defvar *frame-done-semaphore* nil
+  "Semaphore signaled by the main thread after each complete frame swap.
+Created by rs-test-rig:start-frame-step; destroyed by stop-frame-step.")
+
+(defvar *frame-advance-semaphore* nil
+  "Semaphore waited on by the main thread between frames in frame-step mode.
+The test harness signals this once per desired frame advance.
+Created by rs-test-rig:start-frame-step; destroyed by stop-frame-step.")
+
 (defmacro check-render-invariant (test message &rest args)
   "Assert TEST is true at a render-pipeline checkpoint.
 
@@ -51,6 +81,17 @@ Guarded by *render-assertions-enabled* -- set to NIL to silence assertions."
          (log:error :render "Render invariant violated: ~A" msg)
          (break "Render invariant violated: ~A~%~%Tip: (setf mcclim-render-stack::*render-assertions-enabled* nil) to mute"
                 msg)))))
+
+(defmacro with-frame-step-control (() &body body)
+  "Run BODY, then pause the render loop if *frame-step-mode* is active.
+Signals *frame-done-semaphore* so advance-frames can detect frame completion,
+then waits on *frame-advance-semaphore* for permission to proceed.
+Placed outside the per-mirror dolist so N mirrors = 1 pause per frame, not N."
+  `(progn
+     ,@body
+     (when (and *frame-step-mode* *frame-done-semaphore* *frame-advance-semaphore*)
+       (bt2:signal-semaphore *frame-done-semaphore*)
+       (bt2:wait-on-semaphore *frame-advance-semaphore*))))
 
 ;;; ============================================================================
 ;;; GL Proc Address Callback for Impeller
@@ -282,111 +323,147 @@ Thread Contract: MUST be called on UI thread."
   (rs-internals:assert-ui-thread render-delegate-notify-idle)
   nil)
 
-(defmethod render-stack:render-delegate-draw
-    ((runtime render-stack-runtime) pipeline-item)
-  "Called on main thread to rasterize.  Renders each registered mirror.
+;;; ============================================================================
+;;; Per-frame rendering helpers
+;;; ============================================================================
+;;;
+;;; These break up the rendering work that was previously inline in
+;;; render-delegate-draw.  All carry the main-thread constraint of their caller.
 
-For each mirror: if frame-dirty-p is set (by medium-finish-output on the
-UI thread), snapshot pane DLs, composite them into a single DL, and draw
-it to the mirror FBO surface.  Falls back to the retained current-dl or
-test pattern when nothing is dirty.
+(defun %swap-mirror (mirror)
+  "Call *frame-capture-hook* (if set) then GL-swap MIRROR's window.
+Thread Contract: MUST be called on main thread."
+  (when *frame-capture-hook*
+    (funcall *frame-capture-hook* mirror))
+  (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror)))
+
+(defun %update-snapshot-deps (mirror snapshot new-dl)
+  "Manage snapshot DL lifecycle around a composite operation.
+
+Composite SUCCEEDED (snapshot and new-dl both non-nil):
+  Release the OLD composite-deps (sub-DLs from the previous frame's composite),
+  then install SNAPSHOT as the new composite-deps.  NEW-DL holds raw void*
+  references into these sub-DLs via DrawDisplayList ops; they must outlive
+  any layer tree that references them.
+
+Composite FAILED (snapshot non-nil, new-dl nil):
+  Release SNAPSHOT's sub-DLs immediately -- they will never be referenced by
+  a current-dl.  The OLD composite-deps remain live since the old current-dl
+  still needs them.
 
 Thread Contract: MUST be called on main thread."
+  (cond
+    ((and snapshot new-dl)
+     (%release-composite-deps mirror)
+     (setf (mirror-composite-deps mirror) snapshot))
+    (snapshot
+     (dolist (entry snapshot)
+       (dolist (dl (cdr entry))
+         (frs:release-display-list dl))))))
+
+(defun %draw-mirror-frame (runtime mirror surface new-dl)
+  "Render MIRROR to screen and GL-swap based on current state.
+
+Dispatches across three cases:
+
+  First-frame reveal: window is still hidden; if NEW-DL is ready, show the
+    window with content already drawn.  %composite-via-flow has already
+    rasterized to the surface; we just swap then reveal.
+
+  New composite DL: %composite-via-flow has already drawn NEW-DL to SURFACE.
+    Retire the old current-dl, record NEW-DL as current, and swap.
+
+  Retained frame (NEW-DL nil): re-composite from stored pane DLs via
+    %retained-redraw, or fall back to a test pattern if no deps are available.
+
+%swap-mirror is called in each drawing case to fire the frame-capture hook
+before the GL swap.
+Thread Contract: MUST be called on main thread."
+  (cond
+    ;; First-frame: window is hidden; draw+swap+show atomically.
+    ((not (mirror-first-frame-drawn-p mirror))
+     (if new-dl
+         (perform-first-frame-reveal mirror new-dl)
+         (log:debug :render "render-delegate-draw: pre-reveal, no content yet")))
+    ;; New composite DL — already drawn to SURFACE by %composite-via-flow.
+    ;; Retire old current-dl, record new one, swap.
+    (new-dl
+     (let ((old (mirror-current-dl mirror)))
+       (when old (frs:release-display-list old)))
+     (setf (mirror-current-dl mirror) new-dl)
+     (log:info :render "composite draw: surface=~A dims=~Ax~A"
+               (not (null surface)) (mirror-width mirror) (mirror-height mirror))
+     (%swap-mirror mirror))
+    ;; Retained: re-composite from stored pane DLs or fall back to test pattern.
+    ;; Rebuilding the layer tree each retained frame matches the working
+    ;; impeller-flow-composition demo pattern; direct DL reuse produces black
+    ;; (root cause not yet identified).
+    (t
+     (let ((deps (mirror-composite-deps mirror)))
+       (if (and deps surface)
+           (%retained-redraw runtime mirror deps surface)
+           (draw-test-pattern-for-mirror mirror)))
+     (%swap-mirror mirror))))
+
+(defun %render-one-mirror (runtime mirror)
+  "Render one mirror for the current frame.
+
+Snapshots dirty pane DLs, composites them, manages snapshot DL lifetimes,
+then draws to screen.  Clean (unchanged) frames skip the composite and swap
+immediately, then return -- the dolist in render-delegate-draw continues to
+the next mirror.
+
+Thread Contract: MUST be called on main thread."
+  (let* ((surface (get-or-create-mirror-surface mirror))
+         (snapshot
+          (when (bt2:with-lock-held ((mirror-dl-lock mirror))
+                  (mirror-frame-dirty-p mirror))
+            (mirror-snapshot-pane-dls mirror)))
+         (damage-rects (mirror-take-damage-rects mirror)))
+    ;; Clean frame: nothing changed and retained content is available.
+    ;; Swap to keep vsync happy and move on to the next mirror.
+    (when (and (null snapshot) (null damage-rects) (mirror-current-dl mirror))
+      (log:debug :render "render-delegate-draw: clean frame, skipping composite")
+      (%swap-mirror mirror)
+      (return-from %render-one-mirror nil))
+    (let ((new-dl (when snapshot
+                    (%composite-via-flow runtime mirror snapshot surface damage-rects))))
+      (log:info :render "render-delegate-draw: first=~A dirty=~A snap=~A newdl=~A currdl=~A dims=~Ax~A"
+                (mirror-first-frame-drawn-p mirror)
+                (not (null snapshot))
+                (if snapshot (length snapshot) 0)
+                (not (null new-dl))
+                (not (null (mirror-current-dl mirror)))
+                (mirror-width mirror) (mirror-height mirror))
+      ;; Invariant: a non-empty snapshot must always yield a composite DL.
+      (check-render-invariant
+       (or (null snapshot) new-dl)
+       "composite returned nil for non-empty snapshot (n=~A); win=~A dims=~Ax~A"
+       (if snapshot (length snapshot) 0)
+       (mirror-window-id mirror) (mirror-width mirror) (mirror-height mirror))
+      (%update-snapshot-deps mirror snapshot new-dl)
+      (%draw-mirror-frame runtime mirror surface new-dl))))
+
+(defmethod render-stack:render-delegate-draw
+    ((runtime render-stack-runtime) pipeline-item)
+  "Called on main thread to rasterize each registered mirror.
+Delegates per-mirror work to %render-one-mirror.
+Frame-step instrumentation wraps the dolist: N mirrors = 1 pause, not N.
+Thread Contract: MUST be called on main thread."
+  (declare (ignore pipeline-item))
   (rs-internals:assert-main-thread render-delegate-draw)
   (let ((port (runtime-port runtime)))
     (unless port
-      (log:warn :render "Nil Port passed to render-delegate-draw!. Doing nothing...")
+      (log:warn :render "Nil Port passed to render-delegate-draw! Doing nothing.")
       (return-from render-delegate-draw nil))
     (when *debug-frame-limit*
       (let ((n (incf (runtime-debug-frame-count runtime))))
         (when (>= n *debug-frame-limit*)
           (log:info :debug "Frame limit ~A reached - hard exit." *debug-frame-limit*)
           (uiop:quit 0))))
-    (let ((mirrors (collect-registered-mirrors port)))
-      (dolist (mirror mirrors)
-        ;; Get surface early — needed by %composite-via-flow to draw inside
-        ;; the scoped frame (scene DL may reference frame-scoped state).
-        (let ((surface (get-or-create-mirror-surface mirror)))
-          ;; Snapshot pane DLs when frame-dirty-p is set, then composite via Flow.
-          (let* ((snapshot
-                  (when (bt2:with-lock-held ((mirror-dl-lock mirror))
-                          (mirror-frame-dirty-p mirror))
-                    (mirror-snapshot-pane-dls mirror)))
-                 ;; Take accumulated damage rects from UI thread.
-                 (damage-rects (mirror-take-damage-rects mirror)))
-            ;; C4: Skip clean frames -- nothing changed, retained content is correct.
-            (when (and (null snapshot)
-                       (null damage-rects)
-                       (mirror-current-dl mirror))
-              (log:debug :render "render-delegate-draw: clean frame, skipping composite")
-              (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror))
-              (return-from render-delegate-draw nil))
-          (let* ((new-dl
-                  (when snapshot
-                    (%composite-via-flow runtime mirror snapshot surface damage-rects))))
-            (log:info :render "render-delegate-draw: first=~A dirty=~A snap=~A newdl=~A currdl=~A dims=~Ax~A"
-                      (mirror-first-frame-drawn-p mirror)
-                      (not (null snapshot))
-                      (if snapshot (length snapshot) 0)
-                      (not (null new-dl))
-                      (not (null (mirror-current-dl mirror)))
-                      (mirror-width mirror) (mirror-height mirror))
-            ;; Invariant: a non-empty snapshot must always yield a composite DL.
-            (check-render-invariant
-             (or (null snapshot) new-dl)
-             "composite returned nil for non-empty snapshot (n=~A); win=~A dims=~Ax~A"
-             (if snapshot (length snapshot) 0)
-             (mirror-window-id mirror) (mirror-width mirror) (mirror-height mirror))
-            ;; Snapshot lifecycle: scene-dl (current-dl) contains raw void*
-            ;; references to pane ImpellerDisplayLists via recorded DrawDisplayList
-            ;; ops. FlowDisplayListLayerNew does not retain them and neither does
-            ;; scoped-frame-build-display-list. If snapshot DLs are released before
-            ;; current-dl is replaced, retained draws dereference freed pointers
-            ;; and produce black output.
-            ;;
-            ;; Correct pattern: keep snapshot alive as composite-deps while
-            ;; current-dl references them. Release OLD composite-deps (for old
-            ;; current-dl) when a new composite succeeds. If composite failed
-            ;; (new-dl nil), release snapshot immediately (no new current-dl).
-            (cond
-              ((and snapshot new-dl)
-               ;; Composite succeeded: swap old deps for new snapshot.
-               (%release-composite-deps mirror)
-               (setf (mirror-composite-deps mirror) snapshot))
-              (snapshot
-               ;; Composite failed: release snapshot now; old deps stay live.
-               (dolist (entry snapshot)
-                 (dolist (dl (cdr entry))
-                   (frs:release-display-list dl)))))
-            (cond
-              ;; First-frame reveal: window is still hidden.
-              ;; Delay showing until real McCLIM content is available -- no test-pattern flash.
-              ((not (mirror-first-frame-drawn-p mirror))
-               (if new-dl
-                   (perform-first-frame-reveal mirror new-dl)
-                   ;; No content yet -- stay hidden, skip this frame entirely.
-                   (log:debug :render "render-delegate-draw: pre-reveal, no content yet")))
-              ;; New composite DL — already drawn to surface by %composite-via-flow.
-              ;; Store for retained redraw, then swap.
-              (new-dl
-               (let ((old (mirror-current-dl mirror)))
-                 (when old (frs:release-display-list old)))
-               (setf (mirror-current-dl mirror) new-dl)
-               (log:info :render "composite draw: surface=~A dims=~Ax~A"
-                         (not (null surface)) (mirror-width mirror) (mirror-height mirror))
-               (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror)))
-              ;; Not dirty — re-composite from stored pane DLs.
-              ;; DL reuse (drawing mirror-current-dl directly) produces black —
-              ;; we do not know why yet (add draw-result logging above to
-              ;; investigate). Rebuilding the layer tree each retained frame
-              ;; matches the working impeller-flow-composition demo pattern
-              ;; exactly and avoids whatever failure mode afflicts DL reuse.
-              (t
-               (let ((deps (mirror-composite-deps mirror)))
-                 (if (and deps surface)
-                     (%retained-redraw runtime mirror deps surface)
-                     (draw-test-pattern-for-mirror mirror)))
-               (rs-sdl3:sdl3-gl-swap-window (mirror-sdl-window mirror)))))))))))
+    (with-frame-step-control ()
+      (dolist (mirror (collect-registered-mirrors port))
+        (%render-one-mirror runtime mirror)))))
 
 ;;; ============================================================================
 ;;; Direct Rendering

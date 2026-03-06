@@ -73,6 +73,7 @@
     #:mirror-dl-lock
     #:mirror-take-pending-dl
     #:mirror-store-pending-dl
+    #:collect-registered-mirrors
     #:register-mirror
     #:deregister-mirror
     #:find-mirror-by-window-id
@@ -109,7 +110,17 @@
 
     ;; Test helpers
     #:make-rgba-color
-    #:rgba-color))
+    #:rgba-color
+
+    ;; Frame capture hook (installed by mcclim-render-stack/test-rig)
+    #:*snapshot-path*
+    #:*snapshot-every-n-frames*
+    #:*frame-capture-hook*
+
+    ;; Frame-step harness (managed by mcclim-render-stack/test-rig)
+    #:*frame-step-mode*
+    #:*frame-done-semaphore*
+    #:*frame-advance-semaphore*))
 
 (in-package :mcclim-render-stack)
 

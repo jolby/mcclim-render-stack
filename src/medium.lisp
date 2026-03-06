@@ -786,6 +786,77 @@ Thread Contract: Called on UI thread."
     (when (typep medium 'render-stack-medium)
       (medium-finish-output medium))))
 
+;;; medium-finish-output helpers
+
+(defun %finalize-builder (medium builder)
+  "Create a display list from BUILDER, release the builder, and clear the medium slot.
+Returns the new display list. Signals on error (caller handles cleanup)."
+  (let ((dl (frs:create-display-list builder)))
+    (check-render-invariant dl
+                            "create-display-list returned nil; sheet=~A builder=~A"
+                            (type-of (medium-sheet medium)) builder)
+    (frs:release-display-list-builder builder)
+    (setf (medium-display-list-builder medium) nil)
+    dl))
+
+(defun %check-dl-coord-mismatch (medium sheet lx ly)
+  "Log a warning if the DL origin diverges from the pane's clip origin."
+  (multiple-value-bind (tx ty)
+      (transform-position (climi::medium-device-transformation medium) 0 0)
+    (log:info :render "medium-finish-output: dl-origin=(~,1f,~,1f) clip-origin=(~A,~A) sheet=~A"
+              (float tx 1.0f0) (float ty 1.0f0) lx ly (type-of sheet))
+    (when (and lx (or (> (abs (- tx (float lx 1.0f0))) 1.0f0)
+                      (> (abs (- ty (float ly 1.0f0))) 1.0f0)))
+      (log:warn :render "COORD MISMATCH sheet=~A dl-origin=(~,1f,~,1f) clip-origin=(~,1f,~,1f)"
+                (type-of sheet)
+                (float tx 1.0f0) (float ty 1.0f0)
+                (float lx 1.0f0) (float ly 1.0f0)))))
+
+(defun %update-pane-dl-map (mirror sheet dl)
+  "Insert DL into MIRROR's pane-dl-map for SHEET.
+Stream panes: prepend (newest-first; compositor reverses for render order).
+Non-stream panes: replace, releasing old DLs (each repaint is a complete self-paint)."
+  (let ((current-list (gethash sheet (mirror-pane-dl-map mirror))))
+    (if (typep sheet 'clim:output-recording-stream)
+        (setf (gethash sheet (mirror-pane-dl-map mirror))
+              (cons dl current-list))
+        (progn
+          (dolist (old current-list)
+            (frs:release-display-list old))
+          (setf (gethash sheet (mirror-pane-dl-map mirror))
+                (list dl))))))
+
+(defun %note-damage-rect (mirror sheet lx ly lw lh scale-x scale-y)
+  "Push a physical-pixel damage rect for SHEET into MIRROR's pending list."
+  (when (and lx (plusp lw) (plusp lh))
+    (let ((px (floor   (* lx scale-x)))
+          (py (floor   (* ly scale-y)))
+          (pw (ceiling (* lw scale-x)))
+          (ph (ceiling (* lh scale-y))))
+      (push (list px py pw ph) (mirror-pending-damage-rects mirror))
+      (log:debug :render "Noted damage rect px=~A py=~A pw=~A ph=~A sheet=~A"
+                 px py pw ph (type-of sheet)))))
+
+(defun %store-pane-dl (medium mirror sheet dl)
+  "Update MIRROR's pane-dl-map, dirty flag, and damage rects for the new DL.
+Computes HiDPI scale and pane bounds, then takes the dl-lock atomically."
+  (let* ((phys-w  (mirror-width  mirror))
+         (phys-h  (mirror-height mirror))
+         (log-w   (mirror-logical-width  mirror))
+         (log-h   (mirror-logical-height mirror))
+         (scale-x (if (plusp log-w) (float (/ phys-w log-w) 1.0f0) 1.0f0))
+         (scale-y (if (plusp log-h) (float (/ phys-h log-h) 1.0f0) 1.0f0)))
+    (multiple-value-bind (lx ly lw lh)
+        (%pane-logical-bounds sheet)
+      (%check-dl-coord-mismatch medium sheet lx ly)
+      (bt2:with-lock-held ((mirror-dl-lock mirror))
+        (%update-pane-dl-map mirror sheet dl)
+        (setf (mirror-frame-dirty-p mirror) t)
+        (%note-damage-rect mirror sheet lx ly lw lh scale-x scale-y))
+      (log:info :render "Stored pane DL ~A for sheet ~A (list-length=~A)"
+                dl (type-of sheet)
+                (length (gethash sheet (mirror-pane-dl-map mirror)))))))
+
 (defmethod medium-finish-output ((medium render-stack-medium))
   "Finalize this pane's display list and store it in the mirror's pane-dl-map.
 
@@ -806,63 +877,14 @@ Thread Contract: Called on UI thread."
       (let ((builder (medium-display-list-builder medium)))
         (when builder
           (handler-case
-              (let ((dl (frs:create-display-list builder)))
-                (check-render-invariant dl
-                                        "create-display-list returned nil; sheet=~A builder=~A"
-                                        (type-of sheet) builder)
-                ;; Builder is spent -- release it and clear the slot.
-                (frs:release-display-list-builder builder)
-                (setf (medium-display-list-builder medium) nil)
-                ;; Compute damage rect in physical pixels before acquiring the lock.
-                (let* ((phys-w  (mirror-width  mirror))
-                       (phys-h  (mirror-height mirror))
-                       (log-w   (mirror-logical-width  mirror))
-                       (log-h   (mirror-logical-height mirror))
-                       (scale-x (if (plusp log-w) (float (/ phys-w log-w) 1.0f0) 1.0f0))
-                       (scale-y (if (plusp log-h) (float (/ phys-h log-h) 1.0f0) 1.0f0)))
-                  (multiple-value-bind (lx ly lw lh)
-                      (%pane-logical-bounds sheet)
-                    ;; Coordinate mismatch diagnostic (keep for now).
-                    (multiple-value-bind (tx ty)
-                        (transform-position (climi::medium-device-transformation medium) 0 0)
-                      (log:info :render "medium-finish-output: dl-origin=(~,1f,~,1f) clip-origin=(~A,~A) sheet=~A"
-                                (float tx 1.0f0) (float ty 1.0f0) lx ly (type-of sheet))
-                      (when (and lx (or (> (abs (- tx (float lx 1.0f0))) 1.0f0)
-                                        (> (abs (- ty (float ly 1.0f0))) 1.0f0)))
-                        (log:warn :render "COORD MISMATCH sheet=~A dl-origin=(~,1f,~,1f) clip-origin=(~,1f,~,1f)"
-                                  (type-of sheet)
-                                  (float tx 1.0f0) (float ty 1.0f0)
-                                  (float lx 1.0f0) (float ly 1.0f0))))
-                    (bt2:with-lock-held ((mirror-dl-lock mirror))
-                      (let ((current-list (gethash sheet (mirror-pane-dl-map mirror))))
-                        (if (typep sheet 'clim:output-recording-stream)
-                            ;; Stream pane: accumulate (partial updates layer on top).
-                            ;; List is newest-first; compositor reverses for render order.
-                            (setf (gethash sheet (mirror-pane-dl-map mirror))
-                                  (cons dl current-list))
-                            ;; Non-stream pane (gadget/layout): replace.
-                            ;; Each repaint is a complete self-paint; old DLs are stale.
-                            (progn
-                              (dolist (old current-list)
-                                (frs:release-display-list old))
-                              (setf (gethash sheet (mirror-pane-dl-map mirror))
-                                    (list dl)))))
-                      (setf (mirror-frame-dirty-p mirror) t)
-                      (when (and lx (plusp lw) (plusp lh))
-                        (let ((px (floor (* lx scale-x)))
-                              (py (floor (* ly scale-y)))
-                              (pw (ceiling (* lw scale-x)))
-                              (ph (ceiling (* lh scale-y))))
-                          (push (list px py pw ph) (mirror-pending-damage-rects mirror))
-                          (log:debug :render "Noted damage rect px=~A py=~A pw=~A ph=~A sheet=~A"
-                                     px py pw ph (type-of sheet)))))
-                    (log:info :render "Stored pane DL ~A for sheet ~A (list-length=~A)"
-                              dl (type-of sheet)
-                              (length (gethash sheet (mirror-pane-dl-map mirror)))))))
+              (let ((dl (%finalize-builder medium builder)))
+                (%store-pane-dl medium mirror sheet dl))
             (error (e)
               (log:error :render "medium-finish-output error: ~A" e)
-              (frs:release-display-list-builder builder)
-              (setf (medium-display-list-builder medium) nil))))))))
+              (let ((b (medium-display-list-builder medium)))
+                (when b
+                  (frs:release-display-list-builder b)
+                  (setf (medium-display-list-builder medium) nil))))))))))
 
 (defmethod clim:window-erase-viewport :after ((pane clim-stream-pane))
   "When a stream pane's viewport is erased (full repaint starting), clear
